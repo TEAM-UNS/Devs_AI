@@ -1,0 +1,100 @@
+[project]
+name = "devs-ai"
+version = "0.1.0"
+description = "채용 데이터 수집 · 임베딩 · LLM 어시스턴트"
+requires-python = ">=3.13"
+dependencies = [
+    # --- web ---
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sse-starlette>=2.1",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # --- db (postgres + pgvector) ---
+    "sqlmodel>=0.0.24",
+    "sqlalchemy[asyncio]>=2.0",
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3.6",
+    "alembic>=1.14",
+    # --- auth ---
+    "pyjwt[crypto]>=2.9",
+    # --- llm / graph ---
+    "anthropic>=0.40",
+    "langgraph>=0.2.50",
+    "langgraph-checkpoint-postgres>=2.0",
+    # --- embedding ---
+    "voyageai>=0.3",
+    # --- worker ---
+    "arq>=0.26",
+    # --- crawler ---
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "tenacity>=9.0",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.8",
+    "import-linter>=2.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  의존 규칙 R1~R4 강제 (lint-imports)
+#  CI: `lint-imports` 를 ruff 와 함께 실행
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.importlinter]
+root_package = "app"
+
+# R1 — market 은 아무 도메인도 import 하지 않는다
+[[tool.importlinter.contracts]]
+name = "R1: market is independent"
+type = "forbidden"
+source_modules = ["app.domains.market"]
+forbidden_modules = ["app.domains.crawler", "app.domains.chat", "app.llm"]
+
+# R2 — crawler 는 chat 을 모른다
+[[tool.importlinter.contracts]]
+name = "R2: crawler does not touch chat"
+type = "forbidden"
+source_modules = ["app.domains.crawler"]
+forbidden_modules = ["app.domains.chat"]
+
+# R3 — chat 은 market.queries(읽기)만. models/repository 직접 참조 금지
+[[tool.importlinter.contracts]]
+name = "R3: chat reads market through queries only"
+type = "forbidden"
+source_modules = ["app.domains.chat"]
+forbidden_modules = [
+    "app.domains.market.models",
+    "app.domains.market.repository",
+    "app.domains.crawler",
+]
+
+# R4 — port 는 어댑터를 모른다
+[[tool.importlinter.contracts]]
+name = "R4: port knows no adapter"
+type = "forbidden"
+source_modules = ["app.llm.port"]
+forbidden_modules = ["app.llm.chat_adapter", "app.llm.embed_adapter", "app.llm.fake"]
+
+# core 는 도메인을 모른다
+[[tool.importlinter.contracts]]
+name = "core is the bottom layer"
+type = "forbidden"
+source_modules = ["app.core"]
+forbidden_modules = ["app.domains", "app.llm"]

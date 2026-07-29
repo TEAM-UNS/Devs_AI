@@ -1,0 +1,55 @@
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+*.p8
+!**/testdata/*.pem
+
+# ── python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+.Python
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── 가상환경 · uv ───────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+# uv.lock 은 커밋한다 (재현 가능한 설치). 지우지 말 것.
+
+# ── 테스트 · 린트 캐시 ──────────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# ── 런타임 산출물 ───────────────────────────────────────────────────────────
+# 크롤러 스냅샷(CRAWL_SNAPSHOT_DIR). 파싱 실패 원본이라 용량이 크고 재생성 가능.
+var/
+*.log
+logs/
+
+# ── IDE · OS ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 도커 ────────────────────────────────────────────────────────────────────
+docker-compose.override.yml

@@ -1,0 +1,61 @@
+# ai-service 로컬 인프라 — postgres(pgvector) + redis
+#
+#   docker compose up -d
+#   docker compose logs -f postgres
+#
+# init.sql 은 최초 1회(볼륨이 비어 있을 때)만 실행된다.
+# 스키마를 다시 만들려면: docker compose down -v && docker compose up -d
+
+name: jobstack-ai
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: jobstack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobstack}
+      POSTGRES_DB: ${POSTGRES_DB:-jobstack}
+      # 한국어 정렬/대소문자 처리 안정화
+      LANG: C.UTF-8
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command:
+      # 임베딩 검색 워크로드용 최소 튜닝 (로컬 기준)
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "max_parallel_maintenance_workers=4"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobstack} -d ${POSTGRES_DB:-jobstack}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: jobstack-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
