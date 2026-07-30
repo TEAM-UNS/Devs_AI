@@ -243,6 +243,18 @@ class JobPosting(SQLModel, table=True):
     )
 
     title: str = Field(max_length=300)
+
+    # ── 정규화 전 원본 ──────────────────────────────────────────────────
+    # company_id 는 name_key 병합 결과라 오병합 가능성이 있다. 사이트가 준
+    # 회사명 문자열을 그대로 남겨 사후 추적할 수 있게 한다.
+    company_name_raw: str | None = Field(default=None, max_length=200)
+    # 사이트가 제공한 스택 태그 원본 (점핏 techStacks 등).
+    # 정규화·등급 부여는 posting_skill 이 담당하고, 여기는 손대지 않는다.
+    tags_raw: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    )
+
     career_min: int | None = None  # 신입 = 0, 무관 = None
     career_max: int | None = None
     employment_type: str | None = Field(default=None, max_length=30)

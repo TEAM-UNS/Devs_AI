@@ -10,7 +10,7 @@ name: jobstack-ai
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg16
     container_name: jobstack-postgres
     restart: unless-stopped
     environment:

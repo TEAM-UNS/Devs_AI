@@ -27,16 +27,20 @@ class CompanySize(StrEnum):
 
 
 class TechField(StrEnum):
-    """기술 분야. market.tech_field.code 와 1:1 대응."""
+    """기술 분야. market.tech_field.code 와 1:1 대응.
+
+    분류에 못 맞추는 공고는 field_id 를 NULL 로 둔다.
+    "etc" 버킷을 만들면 매핑 실패와 진짜 기타 직무가 섞여서 구분되지 않는다.
+    """
 
     BACKEND = "backend"
     FRONTEND = "frontend"
-    ANDROID = "android"
-    IOS = "ios"
-    DATA = "data"
+    MOBILE = "mobile"
+    DATA_AI = "data_ai"
     DEVOPS = "devops"
-    AI = "ai"
-    ETC = "etc"
+    SECURITY = "security"
+    GAME = "game"
+    EMBEDDED = "embedded"
 
 
 class Requirement(StrEnum):
