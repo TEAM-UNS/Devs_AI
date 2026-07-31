@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
 from app.core import enums
+from app.domains.market.schemas import SkillDictionaryRow
 from app.domains.market.seed_data import SKILL_CATALOG, SkillSeed
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -86,6 +87,41 @@ _SECTION_HEADERS: tuple[tuple[Section, re.Pattern[str]], ...] = (
 )
 
 
+# 본문 유효성 판정용. 섹션 헤더가 하나라도 있으면 "요강"으로 본다.
+SECTION_RE = re.compile(
+    r"자격\s*요건|지원\s*자격|필수\s*요건|우대\s*사항|우대\s*조건"
+    r"|주요\s*업무|담당\s*업무|업무\s*내용|모집\s*요강"
+    r"|requirements?|qualifications?|responsibilit",
+    re.IGNORECASE,
+)
+
+_DEFAULT_MATCHER: SkillMatcher | None = None
+
+
+def _default_matcher() -> SkillMatcher:
+    global _DEFAULT_MATCHER
+    if _DEFAULT_MATCHER is None:
+        _DEFAULT_MATCHER = SkillMatcher.from_catalog()
+    return _DEFAULT_MATCHER
+
+
+def is_valid_body(text: str | None, matcher: SkillMatcher | None = None) -> bool:
+    """이 텍스트가 '공고 본문'인지 판정한다.
+
+    ★ 길이로 판정하지 않는다. 길이는 본문의 정의가 아니다.
+      실제로 잡코리아에서 페이지 안내문 543자가 "정상"으로 통과해
+      스킬 0개인 공고 99건이 조용히 쌓였다.
+
+    섹션 헤더가 있거나 스킬이 하나라도 잡히면 본문으로 인정한다.
+    둘 다 아니면 네비게이션·안내문을 잡은 것이다.
+    """
+    if not text or not text.strip():
+        return False
+    if SECTION_RE.search(text):
+        return True
+    return bool((matcher or _default_matcher()).extract(description=text))
+
+
 def detect_section(line: str) -> Section | None:
     """이 줄이 섹션 헤더면 해당 섹션을, 아니면 None 을 돌려준다."""
     stripped = line.strip()
@@ -134,13 +170,17 @@ class Grade(IntEnum):
     TAG = 3  # 사이트가 직접 붙인 태그. 가장 믿을 만하다.
 
     def to_requirement(self) -> enums.Requirement:
-        if self is Grade.TAG:
-            return enums.Requirement.TAG
-        if self is Grade.REQUIRED:
-            return enums.Requirement.REQUIRED
-        # BODY 는 DB 에 대응 값이 없다. 가장 약한 preferred 로 내린다.
-        return enums.Requirement.PREFERRED
+        return _GRADE_TO_REQUIREMENT[self]
 
+
+# 등급과 DB 값은 1:1 이다. body 가 preferred 로 뭉개지던 문제를 고치면서
+# posting_skill.requirement 를 4값으로 늘렸다.
+_GRADE_TO_REQUIREMENT: dict[Grade, enums.Requirement] = {
+    Grade.TAG: enums.Requirement.TAG,
+    Grade.REQUIRED: enums.Requirement.REQUIRED,
+    Grade.PREFERRED: enums.Requirement.PREFERRED,
+    Grade.BODY: enums.Requirement.BODY,
+}
 
 _SECTION_GRADE: dict[Section, Grade] = {
     Section.REQUIRED: Grade.REQUIRED,
@@ -181,8 +221,10 @@ _KOREAN = re.compile(r"[가-힣]")
 class SkillEntry:
     skill_id: int
     name: str
-    aliases: tuple[str, ...]
+    aliases: tuple[str, ...]  # 대소문자 무시 (소문자로 보관)
     is_ambiguous: bool = False
+    is_common: bool = False
+    cs_aliases: tuple[str, ...] = ()  # 대소문자 구분 (표기 그대로)
 
 
 @dataclass(frozen=True)
@@ -217,21 +259,31 @@ class SkillMatcher:
         self._by_id = {e.skill_id: e for e in entries}
 
         alias_to_id: dict[str, int] = {}
+        cs_alias_to_id: dict[str, int] = {}
         for entry in entries:
             for alias in entry.aliases:
-                key = alias.strip().lower()
                 # 같은 별칭이 두 스킬에 걸리면 먼저 등록된 쪽을 유지한다.
-                alias_to_id.setdefault(key, entry.skill_id)
+                if key := alias.strip().lower():
+                    alias_to_id.setdefault(key, entry.skill_id)
+            for alias in entry.cs_aliases:
+                if key := alias.strip():
+                    cs_alias_to_id.setdefault(key, entry.skill_id)
+
         self._alias_to_id = alias_to_id
+        self._cs_alias_to_id = cs_alias_to_id
 
         # ★ 길이 내림차순. 같은 위치에서는 긴 별칭이 먼저 시도된다.
         #   ("javascript" 가 "java" 보다, "c++" 가 "c" 보다 먼저)
-        ordered = sorted(alias_to_id, key=len, reverse=True)
-        self._pattern = (
-            re.compile("|".join(_alias_pattern(a) for a in ordered), re.IGNORECASE)
-            if ordered
-            else None
-        )
+        self._pattern = self._compile(alias_to_id, re.IGNORECASE)
+        # 대소문자 구분 패턴은 따로 돌린다. 한 정규식에 두 모드를 섞을 수 없다.
+        self._cs_pattern = self._compile(cs_alias_to_id, 0)
+
+    @staticmethod
+    def _compile(aliases: dict[str, int], flags: int) -> re.Pattern[str] | None:
+        if not aliases:
+            return None
+        ordered = sorted(aliases, key=len, reverse=True)
+        return re.compile("|".join(_alias_pattern(a) for a in ordered), flags)
 
     # ── 생성자 ────────────────────────────────────────────────────────────
     @classmethod
@@ -244,32 +296,59 @@ class SkillMatcher:
                     name=seed.name,
                     aliases=tuple(seed.all_aliases()),
                     is_ambiguous=seed.is_ambiguous,
+                    is_common=seed.is_common,
+                    cs_aliases=tuple(seed.all_cs_aliases()),
                 )
                 for index, seed in enumerate(catalog, start=1)
             ]
         )
 
     @classmethod
-    def from_rows(cls, rows: Iterable[tuple[int, str, bool, Sequence[str]]]) -> SkillMatcher:
-        """DB 조회 결과로 만든다. (skill_id, name, is_ambiguous, aliases)"""
+    def from_rows(cls, rows: Iterable[SkillDictionaryRow]) -> SkillMatcher:
+        """DB 조회 결과로 만든다."""
         return cls(
             [
-                SkillEntry(skill_id=sid, name=name, aliases=tuple(aliases), is_ambiguous=amb)
-                for sid, name, amb, aliases in rows
+                SkillEntry(
+                    skill_id=row.skill_id,
+                    name=row.name,
+                    aliases=tuple(row.aliases),
+                    is_ambiguous=row.is_ambiguous,
+                    is_common=row.is_common,
+                    cs_aliases=tuple(row.cs_aliases),
+                )
+                for row in rows
             ]
         )
 
     # ── 매칭 ──────────────────────────────────────────────────────────────
     def find(self, text: str) -> list[tuple[SkillEntry, int, int]]:
-        """(스킬, 시작, 끝) 목록. 모호 스킬 필터는 걸지 않는다."""
-        if not text or self._pattern is None:
+        """(스킬, 시작, 끝) 목록. 모호 스킬 필터는 걸지 않는다.
+
+        대소문자 무시/구분 두 패턴을 각각 돌린 뒤 합친다. 겹치는 구간은
+        긴 쪽이 이긴다 ("C++" 이 있는데 "C" 를 따로 세면 안 된다).
+        """
+        if not text:
             return []
+
+        raw: list[tuple[int, int, int]] = []  # (start, end, skill_id)
+        if self._pattern is not None:
+            for match in self._pattern.finditer(text):
+                if (sid := self._alias_to_id.get(match.group(0).lower())) is not None:
+                    raw.append((match.start(), match.end(), sid))
+        if self._cs_pattern is not None:
+            for match in self._cs_pattern.finditer(text):
+                if (sid := self._cs_alias_to_id.get(match.group(0))) is not None:
+                    raw.append((match.start(), match.end(), sid))
+
+        # 시작 위치 오름차순, 같은 위치면 긴 것 먼저 → 겹치면 뒤엣것을 버린다
+        raw.sort(key=lambda item: (item[0], -(item[1] - item[0])))
         hits: list[tuple[SkillEntry, int, int]] = []
-        for match in self._pattern.finditer(text):
-            skill_id = self._alias_to_id.get(match.group(0).lower())
-            if skill_id is None:
+        consumed_until = -1
+        for start, end, skill_id in raw:
+            if start < consumed_until:
                 continue
-            hits.append((self._by_id[skill_id], match.start(), match.end()))
+            hits.append((self._by_id[skill_id], start, end))
+            consumed_until = end
         return hits
 
     def extract(
@@ -415,6 +494,28 @@ def company_size_from_tags(tags: list[str]) -> enums.CompanySize:
     return enums.CompanySize.UNKNOWN
 
 
+def company_size_from_employee_count(count: int | None) -> enums.CompanySize:
+    """사원수 → 규모 구간. 구간 값은 core/enums.py 가 소유한다 (R5)."""
+    if not count or count <= 0:
+        return enums.CompanySize.UNKNOWN
+    for lower_bound, size in enums.COMPANY_SIZE_BOUNDS:
+        if count >= lower_bound:
+            return size
+    return enums.CompanySize.UNKNOWN
+
+
+def company_size(
+    *, employee_count: int | None = None, tags: list[str] | None = None
+) -> enums.CompanySize:
+    """규모 추정. 사원수가 있으면 그쪽이 정확하다.
+
+    사이트 태그("대기업")는 자기 신고라 과장되는 경우가 있어 보조로만 쓴다.
+    """
+    if (size := company_size_from_employee_count(employee_count)) is not enums.CompanySize.UNKNOWN:
+        return size
+    return company_size_from_tags(tags or [])
+
+
 def normalize_skill_name(name: str) -> str:
     return " ".join((name or "").split()).strip()
 
@@ -422,50 +523,104 @@ def normalize_skill_name(name: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 #  연봉
 # ═══════════════════════════════════════════════════════════════════════════
-_NEGOTIABLE = ("회사내규", "면접 후", "면접후", "협의", "추후 협의")
+_NEGOTIABLE = ("회사내규", "사내규정", "면접 후", "면접후", "협의", "추후 결정", "미정")
+# 외화는 환율·시점 문제가 있어 환산하지 않는다.
+_FOREIGN = re.compile(r"[$€£¥₹]|\b(usd|eur|jpy|gbp|krw\s*equivalent)\b", re.IGNORECASE)
+_HOURLY = re.compile(r"시급|시간\s*당|hourly|per\s*hour", re.IGNORECASE)
+_MONTHLY = re.compile(r"월\s*급|월급여|월\s*\d|monthly|per\s*month", re.IGNORECASE)
+
 _NUM = r"(\d[\d,]*)"
 _UNIT = r"\s*만\s*원?"
 # "3,000~4,000만원" 처럼 단위가 뒤에만 붙는 표기가 흔하다.
 # 앞쪽 단위를 필수로 두면 range 를 놓치고 뒤 숫자만 single 로 잡힌다.
-_RANGE = re.compile(rf"{_NUM}(?:{_UNIT})?\s*[~\-–]\s*{_NUM}{_UNIT}")
-_MIN_ONLY = re.compile(rf"{_NUM}{_UNIT}\s*이상")
-_MAX_ONLY = re.compile(rf"{_NUM}{_UNIT}\s*이하")
-_SINGLE = re.compile(rf"{_NUM}{_UNIT}")
+_RANGE = re.compile(rf"{_NUM}(?:{_UNIT})?\s*[~\-–]\s*{_NUM}(?:{_UNIT})?")
+_MIN_ONLY = re.compile(rf"{_NUM}{_UNIT}?\s*이상")
+_MAX_ONLY = re.compile(rf"{_NUM}{_UNIT}?\s*이하")
+_SINGLE = re.compile(rf"{_NUM}{_UNIT}?")
+
+MONTHS_PER_YEAR = 12
+# 만원 단위로 그럴듯한 범위. 벗어나면 단위를 잘못 읽은 것으로 본다
+# (예: "30,000,000" 은 원 단위 표기이므로 만원으로 취급하면 안 된다).
+_PLAUSIBLE_ANNUAL = range(1000, 100_001)
+_PLAUSIBLE_MONTHLY = range(50, 10_001)
 
 
 def _to_int(text: str) -> int:
     return int(text.replace(",", ""))
 
 
-def parse_salary(raw: str | None) -> tuple[int | None, int | None, enums.SalaryType]:
-    """연봉 문자열 → (min, max, type). 단위는 만원.
+def parse_salary(
+    raw: str | None,
+) -> tuple[int | None, int | None, enums.SalaryType, enums.SalaryPeriod | None]:
+    """급여 문자열 → (min, max, type, period).
 
-        "3,000~4,000만원"   → (3000, 4000, range)
-        "2,600만원 이상"     → (2600, None, min_only)
-        "회사내규에 따름"     → (None, None, negotiable)
-        파싱 불가            → (None, None, unknown)
+    ★ min/max 는 **항상 연봉 만원**이다. 월급 표기는 ×12 해서 저장한다.
+      "월 300만원" 을 300 으로 저장하면 연봉 3,600 짜리가 300 으로 들어가
+      중앙값이 통째로 망가진다.
 
-    점핏은 급여 필드 자체가 없어 항상 unknown 이 된다.
+        "3,000~4,000만원"    → (3000, 4000, range,      annual)
+        "3000~4000"          → (3000, 4000, range,      annual)
+        "2,600만원 이상"      → (2600, None, min_only,   annual)
+        "월 300만원"          → (3600, 3600, range,      monthly)
+        "시급 12,000원"       → (None, None, unknown,    hourly)
+        "회사내규에 따름"      → (None, None, negotiable, None)
+        "$80,000"            → (None, None, unknown,    None)
+
+    hourly 는 근무시간을 모르면 연환산이 불가능해 금액을 버린다.
     """
+    unknown = (None, None, enums.SalaryType.UNKNOWN, None)
     if not raw or not raw.strip():
-        return None, None, enums.SalaryType.UNKNOWN
+        return unknown
 
     text = raw.strip()
+
+    # 협의 표기가 최우선. "면접 후 결정 (3,000만원 수준)" 같은 혼합 표기는
+    # 확정 금액이 아니므로 금액을 취하지 않는다.
     if any(token in text for token in _NEGOTIABLE):
-        return None, None, enums.SalaryType.NEGOTIABLE
+        return None, None, enums.SalaryType.NEGOTIABLE, None
+
+    # 외화는 환산하지 않는다. 기간도 알 수 없으므로 period 는 비운다.
+    if _FOREIGN.search(text):
+        return unknown
+
+    # 시급은 기간만 남기고 금액은 버린다 (통계 제외 대상).
+    if _HOURLY.search(text):
+        return None, None, enums.SalaryType.UNKNOWN, enums.SalaryPeriod.HOURLY
+
+    monthly = bool(_MONTHLY.search(text))
+    period = enums.SalaryPeriod.MONTHLY if monthly else enums.SalaryPeriod.ANNUAL
+    plausible = _PLAUSIBLE_MONTHLY if monthly else _PLAUSIBLE_ANNUAL
+
+    def convert(value: int) -> int | None:
+        """만원 단위 검증 후 연봉으로 환산."""
+        if value not in plausible:
+            return None
+        return value * MONTHS_PER_YEAR if monthly else value
 
     if m := _RANGE.search(text):
-        lo, hi = _to_int(m.group(1)), _to_int(m.group(2))
-        return (lo, hi, enums.SalaryType.RANGE) if lo <= hi else (hi, lo, enums.SalaryType.RANGE)
-    if m := _MIN_ONLY.search(text):
-        return _to_int(m.group(1)), None, enums.SalaryType.MIN_ONLY
-    if m := _MAX_ONLY.search(text):
-        return None, _to_int(m.group(1)), enums.SalaryType.MAX_ONLY
-    if m := _SINGLE.search(text):
-        value = _to_int(m.group(1))
-        return value, value, enums.SalaryType.RANGE
+        low, high = sorted((_to_int(m.group(1)), _to_int(m.group(2))))
+        low, high = convert(low), convert(high)
+        if low is not None and high is not None:
+            return low, high, enums.SalaryType.RANGE, period
+        return unknown
 
-    return None, None, enums.SalaryType.UNKNOWN
+    if m := _MIN_ONLY.search(text):
+        if (low := convert(_to_int(m.group(1)))) is not None:
+            return low, None, enums.SalaryType.MIN_ONLY, period
+        return unknown
+
+    if m := _MAX_ONLY.search(text):
+        if (high := convert(_to_int(m.group(1)))) is not None:
+            return None, high, enums.SalaryType.MAX_ONLY, period
+        return unknown
+
+    if m := _SINGLE.search(text):
+        # 단일 금액은 상·하한이 같은 range 로 본다 (명세 2-4 "월 300만원" 행).
+        if (value := convert(_to_int(m.group(1)))) is not None:
+            return value, value, enums.SalaryType.RANGE, period
+        return unknown
+
+    return unknown
 
 
 IMAGE_POSTING_MIN_CHARS = 200

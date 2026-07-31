@@ -15,7 +15,7 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -31,6 +31,7 @@ from app.domains.market.models import (
     SkillField,
     TechField,
 )
+from app.domains.market.schemas import SkillDictionaryRow, UnmatchedTag
 
 # 상세 실패 시 기존 값을 유지해야 하는 컬럼
 _COALESCE_ON_UPDATE = (
@@ -64,6 +65,9 @@ async def upsert_company(
     description: str | None = None,
     homepage: str | None = None,
     founded: str | None = None,
+    industry: str | None = None,
+    employee_count: int | None = None,
+    revenue: int | None = None,
     size_type: enums.CompanySize = enums.CompanySize.UNKNOWN,
 ) -> int:
     """name_key 기준 병합. 기존 값이 있으면 지우지 않는다."""
@@ -71,8 +75,11 @@ async def upsert_company(
         name_key=name_key,
         name=name,
         description=description,
-        homepage=homepage,
-        founded=founded,
+        homepage=(homepage or None) and homepage[:500],
+        founded=(founded or None) and founded[:20],
+        industry=(industry or None) and industry[:120],
+        employee_count=employee_count,
+        revenue=revenue,
         size_type=size_type.value,
     )
     excluded = stmt.excluded
@@ -83,6 +90,9 @@ async def upsert_company(
             "description": func.coalesce(excluded.description, Company.description),
             "homepage": func.coalesce(excluded.homepage, Company.homepage),
             "founded": func.coalesce(excluded.founded, Company.founded),
+            "industry": func.coalesce(excluded.industry, Company.industry),
+            "employee_count": func.coalesce(excluded.employee_count, Company.employee_count),
+            "revenue": func.coalesce(excluded.revenue, Company.revenue),
             # 이미 알아낸 규모를 unknown 으로 덮어쓰지 않는다.
             # NULLIF 만 쓰면 NULL 이 들어가 NOT NULL 위반이 나므로 COALESCE 로 감싼다.
             "size_type": func.coalesce(
@@ -134,25 +144,84 @@ async def upsert_skills(session: AsyncSession, names: Iterable[str]) -> dict[str
     return {name: sid for name, sid in rows}
 
 
-async def load_skill_entries(
-    session: AsyncSession,
-) -> list[tuple[int, str, bool, list[str]]]:
-    """추출기용 별칭 사전 전체.
+async def load_skill_entries(session: AsyncSession) -> list[SkillDictionaryRow]:
+    """추출기용 별칭 사전 전체. 200행 규모라 한 번에 읽어 메모리에 올린다.
 
-    (skill_id, name, is_ambiguous, aliases) — aliases 에는 정규 표기도 포함한다.
-    200행 규모라 한 번에 읽어 메모리에 올린다.
+    정규 표기(name)는 별칭 테이블에 없지만 매칭 대상이므로 여기서 합쳐준다.
+    단, 대소문자 구분 별칭에 같은 표기가 있으면 그쪽이 우선이다
+    (예: "C" 는 cs_aliases 로만 매칭해야 한다).
     """
-    skills = (await session.exec(select(Skill.id, Skill.name, Skill.is_ambiguous))).all()
-    aliases = (await session.exec(select(SkillAlias.skill_id, SkillAlias.alias))).all()
+    skills = (
+        await session.exec(select(Skill.id, Skill.name, Skill.is_ambiguous, Skill.is_common))
+    ).all()
+    aliases = (
+        await session.exec(select(SkillAlias.skill_id, SkillAlias.alias, SkillAlias.case_sensitive))
+    ).all()
 
-    by_skill: dict[int, list[str]] = defaultdict(list)
-    for skill_id, alias in aliases:
-        by_skill[skill_id].append(alias)
+    insensitive: dict[int, list[str]] = defaultdict(list)
+    sensitive: dict[int, list[str]] = defaultdict(list)
+    for skill_id, alias, case_sensitive in aliases:
+        (sensitive if case_sensitive else insensitive)[skill_id].append(alias)
 
-    return [
-        (skill_id, name, is_ambiguous, [name, *by_skill[skill_id]])
-        for skill_id, name, is_ambiguous in skills
-    ]
+    rows: list[SkillDictionaryRow] = []
+    for skill_id, name, is_ambiguous, is_common in skills:
+        cs = sensitive[skill_id]
+        plain = list(insensitive[skill_id])
+        if not any(a.lower() == name.lower() for a in cs):
+            plain.append(name)
+        rows.append(
+            SkillDictionaryRow(
+                skill_id=skill_id,
+                name=name,
+                is_ambiguous=is_ambiguous,
+                is_common=is_common,
+                aliases=plain,
+                cs_aliases=cs,
+            )
+        )
+    return rows
+
+
+async def count_unmatched_tags(
+    session: AsyncSession, *, source: str | None = None
+) -> tuple[list[UnmatchedTag], int, int]:
+    """사이트 태그 중 사전에 없는 값을 빈도순으로.
+
+    (미매칭 목록, 전체 태그 수, 매칭된 태그 수) 를 돌려준다.
+    tags_raw 가 jsonb 배열이라 jsonb_array_elements_text 로 편다.
+
+    별칭 비교는 소문자로 한다. 대소문자 구분 별칭("CAN")도 태그 매칭에서는
+    사이트가 직접 준 값이라 신뢰하므로 소문자 비교로 충분하다.
+    """
+    where_source = "WHERE p.source = :source" if source else ""
+    sql = text(
+        f"""
+        WITH tags AS (
+            SELECT lower(trim(t.tag)) AS tag
+            FROM market.job_posting p,
+                 LATERAL jsonb_array_elements_text(p.tags_raw) AS t(tag)
+            {where_source}
+        ),
+        marked AS (
+            SELECT tag,
+                   EXISTS (
+                       SELECT 1 FROM market.skill_alias a WHERE lower(a.alias) = tags.tag
+                       UNION ALL
+                       SELECT 1 FROM market.skill s WHERE lower(s.name) = tags.tag
+                   ) AS matched
+            FROM tags
+        )
+        SELECT tag, matched, COUNT(*) AS cnt
+        FROM marked GROUP BY tag, matched ORDER BY cnt DESC
+        """
+    )
+    params = {"source": source} if source else {}
+    rows = (await session.exec(sql.bindparams(**params))).all()
+
+    unmatched = [UnmatchedTag(tag=tag, count=cnt) for tag, matched, cnt in rows if not matched]
+    total = sum(cnt for _, _, cnt in rows)
+    matched_count = sum(cnt for _, matched, cnt in rows if matched)
+    return unmatched, total, matched_count
 
 
 async def upsert_tech_fields(
@@ -173,19 +242,33 @@ async def upsert_tech_fields(
 
 
 async def upsert_skill(
-    session: AsyncSession, *, name: str, category: str | None, is_ambiguous: bool
+    session: AsyncSession,
+    *,
+    name: str,
+    category: str | None,
+    is_ambiguous: bool,
+    is_common: bool = False,
 ) -> int:
-    stmt = pg_insert(Skill).values(name=name, category=category, is_ambiguous=is_ambiguous)
+    stmt = pg_insert(Skill).values(
+        name=name, category=category, is_ambiguous=is_ambiguous, is_common=is_common
+    )
     stmt = stmt.on_conflict_do_update(
         index_elements=[Skill.name],
-        set_={"category": stmt.excluded.category, "is_ambiguous": stmt.excluded.is_ambiguous},
+        set_={
+            "category": stmt.excluded.category,
+            "is_ambiguous": stmt.excluded.is_ambiguous,
+            "is_common": stmt.excluded.is_common,
+        },
     ).returning(Skill.id)
     skill_id = (await session.exec(stmt)).one()
     return skill_id if isinstance(skill_id, int) else skill_id[0]
 
 
 async def replace_skill_aliases(
-    session: AsyncSession, skill_id: int, aliases: Sequence[str]
+    session: AsyncSession,
+    skill_id: int,
+    aliases: Sequence[str],
+    cs_aliases: Sequence[str] = (),
 ) -> int:
     """이 스킬의 별칭을 통째로 교체한다. 실제로 심긴 개수를 돌려준다.
 
@@ -193,11 +276,13 @@ async def replace_skill_aliases(
     (사전에 중복이 있다는 뜻이므로 시드 스크립트가 미리 잡아낸다).
     """
     await session.exec(delete(SkillAlias).where(SkillAlias.skill_id == skill_id))
-    if not aliases:
+    rows = [{"skill_id": skill_id, "alias": a, "case_sensitive": False} for a in aliases]
+    rows += [{"skill_id": skill_id, "alias": a, "case_sensitive": True} for a in cs_aliases]
+    if not rows:
         return 0
     stmt = (
         pg_insert(SkillAlias)
-        .values([{"skill_id": skill_id, "alias": a} for a in aliases])
+        .values(rows)
         .on_conflict_do_nothing(index_elements=[SkillAlias.alias])
         .returning(SkillAlias.id)
     )
@@ -241,6 +326,46 @@ async def iter_postings_for_reparse(
         (pid, desc, tags or [], raw or {}, field_id)
         for pid, desc, tags, raw, field_id in (await session.exec(stmt)).all()
     ]
+
+
+async def update_posting_body(
+    session: AsyncSession,
+    *,
+    source: str,
+    source_job_id: str,
+    description: str | None,
+    body_is_image: bool,
+    body_extract_failed: bool,
+) -> bool:
+    """본문만 갈아끼운다. 스냅샷 재파싱 전용.
+
+    수집 원본(회사·조건·해시)은 건드리지 않는다.
+    갱신된 행이 있으면 True.
+    """
+    result = await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.source == source, JobPosting.source_job_id == source_job_id)
+        .values(
+            description=description,
+            body_is_image=body_is_image,
+            body_extract_failed=body_extract_failed,
+        )
+    )
+    return bool(result.rowcount)
+
+
+async def mark_body_extract_failed(session: AsyncSession, posting_id: int) -> bool:
+    """본문 검증에 실패한 공고를 표시한다. 집계 쿼리가 제외 대상으로 쓴다.
+
+    이미지 공고는 건드리지 않는다. 둘은 배타적이다 —
+    이미지 공고는 "원래 텍스트가 없는 것"이고 실패는 "우리가 못 가져온 것"이다.
+    """
+    result = await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.id == posting_id, JobPosting.body_is_image.is_(False))
+        .values(body_extract_failed=True)
+    )
+    return bool(result.rowcount)
 
 
 async def update_posting_field(

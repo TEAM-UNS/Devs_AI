@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from bs4 import BeautifulSoup
+
 from app.core import enums
 from app.core.database import session_scope
 from app.domains.crawler import extractor
@@ -54,13 +56,14 @@ class ReparseStats:
     skills_linked: int = 0
     without_skills: int = 0
     field_updated: int = 0
+    body_failed: int = 0
     errors: int = 0
 
     def as_line(self) -> str:
         return (
             f"postings={self.postings} skills_linked={self.skills_linked} "
             f"without_skills={self.without_skills} field_updated={self.field_updated} "
-            f"errors={self.errors}"
+            f"body_failed={self.body_failed} errors={self.errors}"
         )
 
 
@@ -98,6 +101,12 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
                     if new_field_id != old_field_id:
                         await repository.update_posting_field(session, posting_id, new_field_id)
                         stats.field_updated += 1
+
+                    # 저장된 본문이 실제로 '요강' 인지 다시 판정한다.
+                    # 길이 기준으로 통과했던 과거 행을 여기서 바로잡는다.
+                    if not extractor.is_valid_body(description, matcher):
+                        if await repository.mark_body_extract_failed(session, posting_id):
+                            stats.body_failed += 1
             except Exception:
                 log.exception("재추출 실패 posting_id=%s", posting_id)
                 stats.errors += 1
@@ -111,11 +120,58 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
     return stats
 
 
+async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStats:
+    """저장된 HTML 스냅샷으로 본문만 다시 뽑는다. 네트워크를 타지 않는다.
+
+    파서를 고친 뒤 재수집 없이 결과를 반영하려고 쓴다.
+    description · body_is_image · body_extract_failed 만 갱신하고
+    나머지 컬럼은 건드리지 않는다.
+    """
+    stats = ReparseStats()
+    paths = sorted(crawler.snapshot_dir.glob("position_*.html"))
+    log.info("%s: 스냅샷 %d건에서 본문 재추출", crawler.source, len(paths))
+    if not paths:
+        return stats
+
+    extract_body = getattr(crawler, "extract_body", None)
+    if extract_body is None:
+        raise RuntimeError(f"{crawler.source} 는 extract_body() 를 제공하지 않습니다.")
+
+    async with session_scope() as session:
+        for path in paths:
+            source_job_id = path.stem.removeprefix("position_")
+            try:
+                soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "lxml")
+                result = extract_body(soup)
+                async with session.begin_nested():
+                    updated = await repository.update_posting_body(
+                        session,
+                        source=crawler.source,
+                        source_job_id=source_job_id,
+                        description=result.get("responsibility"),
+                        body_is_image=bool(result.get("body_is_image")),
+                        body_extract_failed=bool(result.get("body_extract_failed")),
+                    )
+            except Exception:
+                log.exception("본문 재추출 실패 %s", path.name)
+                stats.errors += 1
+                continue
+
+            if updated:
+                stats.postings += 1
+                if result.get("body_extract_failed"):
+                    stats.without_skills += 1
+
+    return stats
+
+
 class CrawlService:
     def __init__(self, crawler: BaseSiteCrawler) -> None:
         self.crawler = crawler
 
-    async def crawl(self, pages: int = 1, *, with_detail: bool = True) -> CrawlStats:
+    async def crawl(
+        self, pages: int = 1, *, with_detail: bool = True, start_page: int = 1
+    ) -> CrawlStats:
         stats = CrawlStats()
 
         async with session_scope() as session:
@@ -127,7 +183,7 @@ class CrawlService:
             matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
 
         try:
-            for page in range(1, pages + 1):
+            for page in range(start_page, start_page + pages):
                 try:
                     jobs, total = await self.crawler.fetch_list_page(page)
                 except ParseError as exc:
@@ -238,7 +294,7 @@ class CrawlService:
 
         tech_field = extractor.map_tech_field(job.job_categories)
         description = job.build_description()
-        salary_min, salary_max, salary_type = extractor.parse_salary(None)  # 점핏은 급여 없음
+        salary_min, salary_max, salary_type, salary_period = extractor.parse_salary(job.salary_raw)
 
         posting_id = await repository.upsert_posting(
             session,
@@ -253,15 +309,19 @@ class CrawlService:
                 "tags_raw": job.tech_stacks,
                 "career_min": job.career_min,
                 "career_max": job.career_max,
-                "education": (job.education or None),
+                # 사람인 학력 라벨이 "대졸(2,3년제) 이상 (졸업예정자 가능)" 처럼 길다.
+                "education": (job.education or None) and job.education[:30],
+                "employment_type": (job.employment_type or None) and job.employment_type[:30],
                 "location": (job.locations[0][:120] if job.locations else None),
                 "description": description,
                 "welfare": job.build_welfare(),
-                "salary_raw": None,
+                "salary_raw": job.salary_raw,
                 "salary_min": salary_min,
                 "salary_max": salary_max,
                 "salary_type": salary_type.value,
-                "body_is_image": extractor.is_image_posting(description, has_image=False),
+                "salary_period": salary_period.value if salary_period else None,
+                "body_is_image": job.body_is_image,
+                "body_extract_failed": job.body_extract_failed,
                 "posted_at": job.published_at,
                 "expires_at": job.closed_at,
                 "content_hash": content_hash,
@@ -273,6 +333,7 @@ class CrawlService:
                     "company_tags": job.company_tags,
                     "newcomer": job.newcomer,
                     "detail_fetched": job.detail_fetched,
+                    "image_urls": job.image_urls,
                 },
             },
         )
@@ -300,9 +361,15 @@ class CrawlService:
             name=job.company_name[:200],
             name_key=name_key[:200],
             description=job.company_service_info,
-            homepage=job.company_url,
+            homepage=(job.company_url or None),
             founded=(job.company_establish_date or None),
-            size_type=extractor.company_size_from_tags(job.company_tags),
+            industry=job.company_industry,
+            employee_count=job.company_employee_count,
+            revenue=job.company_revenue,
+            # 사원수를 알면 그쪽이 정확하다. 없으면 "대기업" 같은 태그로 추정한다.
+            size_type=extractor.company_size(
+                employee_count=job.company_employee_count, tags=job.company_tags
+            ),
         )
 
         # 사이트 내부 기업 id 는 상세에만 있다. 없으면 원장을 남기지 않는다.

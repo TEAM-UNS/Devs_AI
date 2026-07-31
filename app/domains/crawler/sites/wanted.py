@@ -1,7 +1,209 @@
 """원티드 — 공개 XHR(JSON) 호출. HTML 파싱 불필요.
 
-스택 태그   있음 → requirement='tag' 로 저장
-기업정보    기업소개 · 규모
-비고        목록/상세가 모두 JSON 이라 셀렉터 깨짐 위험이 낮다.
-            응답 스키마 변경은 키 존재 검증으로 감지한다.
+실제 응답을 확인하고 필드명을 고정했다 (2026-07-30 기준).
+
+    목록  GET /api/chaos/navigation/v1/results
+              ?job_group_id=518&country=kr&job_sort=job.latest_order
+              &years=-1&locations=all&limit=20&offset=N
+          → data[]: id · position · company{id,name} · address{location,district}
+                    skill_tags[] · annual_from/to · is_newbie · employment_type
+
+    상세  GET /api/chaos/jobs/v1/{id}/details
+          → job.detail{position, intro, main_tasks, requirements,
+                       preferred_points, benefits, hire_rounds}
+            job.company{name, industry_name, company_tags[]}
+            job.address.full_location · job.due_time · job.skill_tags[]
+
+점핏과 같은 패턴이라 sites/jumpit.py 의 구조를 그대로 따른다.
+
+원티드의 장점
+    본문이 이미 섹션별로 나뉘어 온다. HTML 사이트처럼 섹션 헤더를 찾아
+    쪼갤 필요가 없다. RawJob.build_description() 이 "[자격요건]" 같은 헤더를
+    붙여 합치므로 추출기가 그대로 인식한다.
+
+주의
+    - benefits(복지)는 description 에 넣지 않는다. 복지 문구의 "Slack 으로 소통",
+      "자바 도서 지원" 이 스택으로 잡히면 집계가 오염된다. welfare 컬럼으로 간다.
+    - skill_tags 는 [{id, title}] 또는 [] 로 온다. 빈 공고가 꽤 있다.
 """
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.domains.crawler.schemas import RawJob
+from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseError
+
+log = logging.getLogger(__name__)
+
+BASE = "https://www.wanted.co.kr"
+LIST_URL = f"{BASE}/api/chaos/navigation/v1/results"
+DETAIL_URL = f"{BASE}/api/chaos/jobs/v1/{{job_id}}/details"
+WEB_URL = f"{BASE}/wd/{{job_id}}"
+
+# 518 = 개발 직군 전체. 하위 직무는 category_tag.id 로 구분된다.
+JOB_GROUP_DEV = 518
+PAGE_SIZE = 20
+
+KST = timezone(timedelta(hours=9))
+
+_EMPLOYMENT = {
+    "regular": "정규직",
+    "contract": "계약직",
+    "intern": "인턴",
+    "freelance": "프리랜서",
+}
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # 타임존이 없으면 KST 로 해석한다 (한국 채용 사이트).
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=KST)
+
+
+def _titles(tags: Any) -> list[str]:
+    """[{id, title}] · ["Java"] 두 형태를 모두 받아 문자열 목록으로."""
+    result: list[str] = []
+    for tag in tags or []:
+        if isinstance(tag, dict) and (title := tag.get("title") or tag.get("name")):
+            result.append(str(title).strip())
+        elif isinstance(tag, str) and tag.strip():
+            result.append(tag.strip())
+    return result
+
+
+def _location(address: Any) -> str | None:
+    if not isinstance(address, dict):
+        return None
+    if full := address.get("full_location"):
+        return str(full)
+    parts = [address.get("location"), address.get("district")]
+    joined = " ".join(str(p) for p in parts if p)
+    return joined or None
+
+
+class WantedCrawler(BaseSiteCrawler):
+    source = "wanted"
+    referer = f"{BASE}/wdlist/{JOB_GROUP_DEV}"
+
+    def __init__(self, *, job_group_id: int = JOB_GROUP_DEV, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.job_group_id = job_group_id
+
+    # ── 목록 ──────────────────────────────────────────────────────────────
+    async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
+        payload = await self.get_json(
+            LIST_URL,
+            params={
+                "job_group_id": self.job_group_id,
+                "country": "kr",
+                "job_sort": "job.latest_order",
+                "years": -1,
+                "locations": "all",
+                "limit": PAGE_SIZE,
+                "offset": (page - 1) * PAGE_SIZE,  # 원티드는 offset 기반이다
+            },
+            snapshot=f"list_p{page}",
+        )
+        return self.parse_list(payload, page)
+
+    def parse_list(self, payload: Any, page: int) -> tuple[list[RawJob], int]:
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise ParseError(
+                f"원티드 목록 응답에 data 가 없습니다 (page={page}). "
+                f"받은 키: {list((payload or {}).keys())}"
+            )
+
+        jobs: list[RawJob] = []
+        for item in payload.get("data") or []:
+            try:
+                jobs.append(self._map_list_item(item))
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning("원티드 목록 항목 매핑 실패 id=%s: %s", item.get("id"), exc)
+        # 전체 건수를 주지 않는다. 0 을 돌려주고 페이지가 빌 때까지 돈다.
+        return jobs, 0
+
+    def _map_list_item(self, item: dict[str, Any]) -> RawJob:
+        job_id = item["id"]
+        company = item.get("company") or {}
+        employment = item.get("employment_type")
+        return RawJob(
+            source=self.source,
+            source_job_id=str(job_id),
+            url=WEB_URL.format(job_id=job_id),
+            title=item.get("position") or "",
+            company_name=(company.get("name") or "").strip(),
+            tech_stacks=_titles(item.get("skill_tags")),
+            locations=[loc for loc in [_location(item.get("address"))] if loc],
+            career_min=item.get("annual_from"),
+            career_max=item.get("annual_to"),
+            newcomer=bool(item.get("is_newbie")),
+            employment_type=_EMPLOYMENT.get(employment or "", employment),
+            company_source_id=str(company["id"]) if company.get("id") else None,
+            raw={"list": item},
+        )
+
+    # ── 상세 ──────────────────────────────────────────────────────────────
+    async def fetch_detail(self, job: RawJob) -> RawJob:
+        try:
+            payload = await self.get_json(
+                DETAIL_URL.format(job_id=job.source_job_id),
+                snapshot=f"position_{job.source_job_id}",
+            )
+        except CrawlError as exc:
+            log.warning("원티드 상세 실패 id=%s: %s", job.source_job_id, exc)
+            return job
+        return self.merge_detail(job, payload)
+
+    def merge_detail(self, job: RawJob, payload: Any) -> RawJob:
+        posting = (payload or {}).get("job")
+        if not isinstance(posting, dict):
+            log.warning("원티드 상세 응답에 job 이 없음 id=%s", job.source_job_id)
+            return job
+
+        detail = posting.get("detail") or {}
+        company = posting.get("company") or {}
+
+        # 본문 3섹션. benefits 는 일부러 뺀다 (복지는 추출 대상이 아니다).
+        responsibility = detail.get("main_tasks")
+        requirements = detail.get("requirements")
+        preferred = detail.get("preferred_points")
+
+        update: dict[str, Any] = {
+            "detail_fetched": True,
+            "title": detail.get("position") or job.title,
+            "company_name": company.get("name") or job.company_name,
+            "tech_stacks": _titles(posting.get("skill_tags")) or job.tech_stacks,
+            "locations": [loc for loc in [_location(posting.get("address"))] if loc]
+            or job.locations,
+            "career_min": posting.get("annual_from", job.career_min),
+            "career_max": posting.get("annual_to", job.career_max),
+            "newcomer": bool(posting.get("is_newbie", job.newcomer)),
+            "closed_at": _parse_dt(posting.get("due_time")) or job.closed_at,
+            "responsibility": responsibility,
+            "qualifications": requirements,
+            "preferred_requirements": preferred,
+            "welfares": detail.get("benefits"),
+            "recruit_process": detail.get("hire_rounds"),
+            "company_service_info": detail.get("intro"),
+            "company_industry": company.get("industry_name"),
+            "company_tags": _titles(company.get("company_tags")),
+            "company_source_id": (
+                str(company["id"]) if company.get("id") else job.company_source_id
+            ),
+            # JSON 이라 본문 추출 실패라는 개념이 없다. 섹션이 전부 비면 실패다.
+            "body_extract_failed": not any((responsibility, requirements, preferred)),
+            "raw": {**job.raw, "detail": detail},
+        }
+
+        clean = {k: v for k, v in update.items() if v not in (None, "", [])}
+        clean["detail_fetched"] = True
+        clean["body_extract_failed"] = update["body_extract_failed"]
+        return job.model_copy(update=clean)

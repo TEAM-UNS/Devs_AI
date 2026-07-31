@@ -193,6 +193,10 @@ class JobPosting(SQLModel, table=True):
             name="job_posting_salary_type_chk",
         ),
         CheckConstraint(
+            f"salary_period IS NULL OR {enums.sql_in('salary_period', enums.SalaryPeriod)}",
+            name="job_posting_salary_period_chk",
+        ),
+        CheckConstraint(
             "career_min IS NULL OR career_max IS NULL OR career_min <= career_max",
             name="job_posting_career_chk",
         ),
@@ -220,7 +224,8 @@ class JobPosting(SQLModel, table=True):
             "job_posting_embed_todo_idx",
             "id",
             postgresql_where=text(
-                "body_is_image = false AND description IS NOT NULL "
+                "body_is_image = false AND body_extract_failed = false "
+                "AND description IS NOT NULL "
                 "AND (embed_hash IS NULL OR embed_hash IS DISTINCT FROM content_hash)"
             ),
         ),
@@ -266,16 +271,27 @@ class JobPosting(SQLModel, table=True):
     welfare: str | None = Field(default=None, sa_type=Text)
 
     salary_raw: str | None = Field(default=None, sa_type=Text)
-    salary_min: int | None = None  # 만원 단위
+    # ★ 항상 "연봉 만원" 단위다. 월급 표기는 ×12 해서 저장한다.
+    #   원문 기준은 salary_period 에 따로 남긴다.
+    salary_min: int | None = None
     salary_max: int | None = None
     salary_type: enums.SalaryType = Field(
         default=enums.SalaryType.UNKNOWN,
         sa_type=String(16),
         sa_column_kwargs={"server_default": text("'unknown'")},
     )
+    # annual · monthly · hourly. 알 수 없거나 negotiable 이면 NULL.
+    # hourly 는 근무시간을 몰라 연환산이 불가능하므로 통계에서 제외한다.
+    salary_period: enums.SalaryPeriod | None = Field(default=None, sa_type=String(8))
 
-    # 본문 200자 미만 + 이미지 존재. 집계·임베딩 대상에서 제외한다.
+    # 본문이 이미지 한 장인 공고. 집계·임베딩 대상에서 제외한다.
     body_is_image: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
+    # 본문 추출 실패 (파서가 네비게이션·안내문만 건졌거나 사이트가 본문을 안 내려줌).
+    # body_is_image 와 구분한다 — 저건 원래 텍스트가 없는 공고,
+    # 이건 우리가 못 가져온 것이라 나중에 재시도 대상을 고를 때 구분이 필요하다.
+    body_extract_failed: bool = Field(
+        default=False, sa_column_kwargs={"server_default": text("false")}
+    )
     posted_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     expires_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
@@ -308,6 +324,10 @@ class Skill(SQLModel, table=True):
     category: str | None = Field(default=None, max_length=32)
     # Go · C · R — 문맥 단서 없으면 미채택
     is_ambiguous: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
+    # Git · Jira · Slack 처럼 전 직군 공통 도구. 트렌드 집계에서 기본 제외한다
+    # (신호가 아니라 배경 소음이라 상위권을 의미 없이 차지한다).
+    # get_company_profile 은 협업 환경 정보로 유용하므로 포함한다.
+    is_common: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
     # name + aliases. 200행 규모라 앱 시작 시 메모리로 로드한다(인덱스 없음).
     embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(EMBEDDING_DIM)))
     created_at: datetime | None = Field(default=None, sa_column=_created_at())
@@ -328,6 +348,10 @@ class SkillAlias(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     skill_id: int = Field(foreign_key=f"{SCHEMA}.skill.id", ondelete="CASCADE")
     alias: str = Field(max_length=120, unique=True)
+    # 대소문자를 구분해 매칭한다. "CAN"(차량 버스)이 영어 문장의 "can" 에,
+    # "ES"(Elasticsearch)가 "es" 에 걸리는 것을 원천 차단한다.
+    # 문맥 게이트에만 의존하면 영문 공고가 많은 사이트에서 뚫린다.
+    case_sensitive: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
 
     skill: Skill | None = Relationship(back_populates="aliases")
 

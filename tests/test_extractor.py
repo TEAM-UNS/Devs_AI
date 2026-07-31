@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.enums import Requirement, TechField
+from app.core.enums import Requirement, SalaryPeriod, SalaryType, TechField
 from app.domains.crawler.extractor import (
     Grade,
     Section,
@@ -18,6 +18,7 @@ from app.domains.crawler.extractor import (
     parse_salary,
     split_sections,
 )
+from app.domains.market.seed_data import SKILL_CATALOG
 
 matcher = SkillMatcher.from_catalog()
 
@@ -218,15 +219,107 @@ def test_map_tech_field(categories, expected):
     assert map_tech_field(categories) is expected
 
 
+# 명세 2-4 "연봉 정규화 규칙" 표 전체.
+# min/max 는 항상 연봉 만원 단위다.
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("3,000~4,000만원", (3000, 4000)),
-        ("2,600만원 이상", (2600, None)),
-        ("회사내규에 따름", (None, None)),
-        (None, (None, None)),
+        ("3,000~4,000만원", (3000, 4000, SalaryType.RANGE, SalaryPeriod.ANNUAL)),
+        ("3000~4000", (3000, 4000, SalaryType.RANGE, SalaryPeriod.ANNUAL)),
+        ("2,600만원 이상", (2600, None, SalaryType.MIN_ONLY, SalaryPeriod.ANNUAL)),
+        ("월 300만원", (3600, 3600, SalaryType.RANGE, SalaryPeriod.MONTHLY)),
+        ("시급 12,000원", (None, None, SalaryType.UNKNOWN, SalaryPeriod.HOURLY)),
+        ("회사내규에 따름", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("면접 후 결정", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("협의 후 결정", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("$80,000", (None, None, SalaryType.UNKNOWN, None)),
+        (None, (None, None, SalaryType.UNKNOWN, None)),
     ],
 )
-def test_parse_salary(raw, expected):
-    low, high, _ = parse_salary(raw)
-    assert (low, high) == expected
+def test_parse_salary_normalization_table(raw, expected):
+    assert parse_salary(raw) == expected
+
+
+def test_monthly_salary_is_annualized():
+    """월급이 그대로 저장되면 연봉 3,600 짜리가 300 으로 들어가 중앙값이 망가진다."""
+    low, high, _, period = parse_salary("월 300만원")
+    assert (low, high) == (3600, 3600)
+    assert period is SalaryPeriod.MONTHLY
+
+
+def test_hourly_amount_is_discarded():
+    """시급은 근무시간을 몰라 연환산이 불가능하다. 기간만 남기고 금액은 버린다."""
+    low, high, salary_type, period = parse_salary("시급 12,000원")
+    assert (low, high) == (None, None)
+    assert salary_type is SalaryType.UNKNOWN
+    assert period is SalaryPeriod.HOURLY
+
+
+def test_implausible_amount_is_rejected():
+    """원 단위 표기를 만원으로 잘못 읽지 않는다."""
+    assert parse_salary("30,000,000원")[:2] == (None, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  4값 등급
+# ═══════════════════════════════════════════════════════════════════════════
+def test_body_grade_is_no_longer_flattened_into_preferred():
+    """주요업무에서 잡힌 스킬은 body 다. preferred 로 뭉개지면 안 된다."""
+    result = extract(POSTING)
+    # POSTING 의 주요업무는 "백엔드 API 설계 및 운영" 이라 스킬이 없다.
+    body = "[주요업무]\n- Kubernetes 클러스터 위에서 서비스를 운영합니다"
+    assert extract(body)["Kubernetes"] is Requirement.BODY
+    # 자격요건은 그대로 required
+    assert result["Java"] is Requirement.REQUIRED
+
+
+def test_requirement_has_four_values():
+    assert {r.value for r in Requirement} == {"tag", "required", "preferred", "body"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  대소문자 구분 별칭
+# ═══════════════════════════════════════════════════════════════════════════
+def test_lowercase_can_in_english_sentence_is_not_matched():
+    """ "you can use..." 의 can 이 차량용 CAN 으로 잡히면 안 된다."""
+    body = "[자격요건]\nYou can use any language you prefer for development"
+    assert "CAN" not in names(body)
+
+
+def test_uppercase_can_is_matched():
+    body = "[자격요건]\nCAN, UART 등 통신 인터페이스 개발 경험"
+    assert "CAN" in names(body)
+
+
+def test_lowercase_es_is_not_matched():
+    assert "Elasticsearch" not in names("[자격요건]\nSe requieren es habilidades de desarrollo")
+
+
+def test_uppercase_es_is_matched():
+    assert "Elasticsearch" in names("[자격요건]\nES 클러스터 운영 경험")
+
+
+def test_lowercase_single_letters_are_not_matched():
+    """소문자 c · r 은 영어 문장에서 너무 흔하다."""
+    body = "[자격요건]\nsection c and r of the development handbook"
+    assert "C" not in names(body)
+    assert "R" not in names(body)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  is_common
+# ═══════════════════════════════════════════════════════════════════════════
+def test_common_tools_are_flagged():
+    flagged = {s.name for s in SKILL_CATALOG if s.is_common}
+    assert flagged == {"Git", "Jira", "Slack", "Notion", "Confluence"}
+
+
+def test_figma_and_linux_are_not_common():
+    """직군 신호가 있는 도구는 트렌드에서 빼면 정보가 사라진다."""
+    not_common = {s.name for s in SKILL_CATALOG if not s.is_common}
+    assert {"Figma", "Linux"} <= not_common
+
+
+def test_common_tools_are_still_extracted():
+    """추출은 한다. 제외는 집계 쿼리(get_popular_skills)의 몫이다."""
+    assert "Slack" in names("[자격요건]\nSlack 으로 협업한 경험")

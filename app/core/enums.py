@@ -44,11 +44,28 @@ class TechField(StrEnum):
 
 
 class Requirement(StrEnum):
-    """공고가 스킬을 요구하는 강도."""
+    """공고가 스킬을 요구하는 강도. 신뢰도 순서는 tag > required > preferred > body.
 
+    툴별 사용 등급 (명세 2-4)
+        get_skill_gap        required + tag
+        get_popular_skills   required + preferred + tag   (body 제외)
+        get_rising_skills    required + preferred + tag
+        get_company_profile  전부 (body 포함 — "이 회사가 쓰는 스택")
+        compare_companies    required + tag
+    """
+
+    TAG = "tag"  # 사이트가 제공한 스택 태그 (원티드 · 점핏)
     REQUIRED = "required"  # 자격요건
     PREFERRED = "preferred"  # 우대사항
-    TAG = "tag"  # 사이트가 제공한 스택 태그 (원티드 · 점핏)
+    BODY = "body"  # 주요업무 · 도입부의 단순 언급
+
+
+class SalaryPeriod(StrEnum):
+    """원문의 급여 기준. salary_min/max 는 항상 연봉 만원으로 환산해 저장한다."""
+
+    ANNUAL = "annual"
+    MONTHLY = "monthly"
+    HOURLY = "hourly"  # 근무시간 미상이라 연환산 불가 → 통계 제외
 
 
 class ChunkSection(StrEnum):

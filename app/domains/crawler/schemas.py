@@ -48,12 +48,26 @@ class RawJob(BaseModel):
     welfares: str | None = None
     recruit_process: str | None = None
 
+    # 원문 급여 표기. 파싱은 extractor.parse_salary 가 한다.
+    salary_raw: str | None = None
+
+    # 본문이 이미지 한 장인 공고 (중소기업에 흔하다). 통계에서 제외 대상.
+    body_is_image: bool = False
+    image_urls: list[str] = Field(default_factory=list)
+    # 본문을 못 건졌다 (네비게이션·안내문만 잡힘). 집계에서 제외한다.
+    # 이미지 공고와 구분한다 — 이건 우리 파서 문제이거나 사이트가 본문을
+    # JS 로만 내려주는 경우이고, 저건 원래 텍스트가 없는 공고다.
+    body_extract_failed: bool = False
+
     # ── 기업 정보 ────────────────────────────────────────────────────────
     company_service_info: str | None = None  # 서비스/회사 소개
     company_url: str | None = None
     company_establish_date: str | None = None
     company_source_id: str | None = None  # 사이트 내부 기업 식별자
     company_tags: list[str] = Field(default_factory=list)  # "대기업" 등
+    company_industry: str | None = None
+    company_employee_count: int | None = None
+    company_revenue: int | None = None  # 원 단위
 
     # 파서가 못 옮긴 원본. 나중에 컬럼을 늘릴 때 재수집 없이 채울 수 있다.
     raw: dict = Field(default_factory=dict)

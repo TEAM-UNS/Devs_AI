@@ -27,11 +27,15 @@ def find_alias_collisions() -> dict[str, list[str]]:
     skill_alias.alias 는 전역 UNIQUE 라 그냥 넣으면 뒤에 온 쪽이 조용히
     버려진다. 사전이 조용히 망가지는 걸 막으려고 미리 검사한다.
     """
-    owners: dict[str, list[str]] = defaultdict(list)
+    # 같은 스킬이 "Qt"/"QT" 처럼 대소문자만 다른 표기를 둘 다 갖는 건 충돌이 아니다.
+    # 소유자를 집합으로 세서 자기 자신과의 충돌을 걸러낸다.
+    owners: dict[str, set[str]] = defaultdict(set)
     for skill in SKILL_CATALOG:
-        for alias in skill.all_aliases():
-            owners[alias].append(skill.name)
-    return {alias: names for alias, names in owners.items() if len(names) > 1}
+        # 대소문자 구분 별칭도 소문자로 비교한다. "C" 와 "c" 가 서로 다른
+        # 스킬에 붙으면 사람이 읽기에 사전이 깨진 것이다.
+        for alias in (*skill.all_aliases(), *(a.lower() for a in skill.all_cs_aliases())):
+            owners[alias].add(skill.name)
+    return {alias: sorted(names) for alias, names in owners.items() if len(names) > 1}
 
 
 def check() -> int:
@@ -44,8 +48,12 @@ def check() -> int:
         print(f"  {code:<10} {count:>3}{flag}")
 
     ambiguous = [s.name for s in SKILL_CATALOG if s.is_ambiguous]
-    print(f"모호 스킬: {', '.join(ambiguous)}")
-    print(f"별칭 총 {sum(len(s.all_aliases()) for s in SKILL_CATALOG)}개")
+    common = [s.name for s in SKILL_CATALOG if s.is_common]
+    cs = [f"{s.name}({'/'.join(s.all_cs_aliases())})" for s in SKILL_CATALOG if s.cs_aliases]
+    print(f"모호 스킬     : {', '.join(ambiguous)}")
+    print(f"공통 도구     : {', '.join(common)}")
+    print(f"대소문자 구분 : {', '.join(cs)}")
+    print(f"별칭 총 {sum(len(s.all_aliases()) + len(s.all_cs_aliases()) for s in SKILL_CATALOG)}개")
 
     if collisions:
         print("\n!! 별칭 충돌 — 한 별칭을 여러 스킬이 주장합니다:")
@@ -101,10 +109,14 @@ async def seed() -> int:
                 name=skill.name,
                 category=skill.category,
                 is_ambiguous=skill.is_ambiguous,
+                is_common=skill.is_common,
             )
             # 정규 표기는 매처가 자동으로 붙이므로 별칭 테이블에는 넣지 않는다.
+            # 단 대소문자 구분 표기는 플래그를 실어야 하므로 반드시 넣는다.
             aliases = [a for a in skill.all_aliases() if a != skill.name.lower()]
-            alias_total += await repository.replace_skill_aliases(session, skill_id, aliases)
+            alias_total += await repository.replace_skill_aliases(
+                session, skill_id, aliases, skill.all_cs_aliases()
+            )
             await repository.replace_skill_fields(
                 session,
                 skill_id,

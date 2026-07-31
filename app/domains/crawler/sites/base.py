@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Self
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.core.config import get_settings
 from app.domains.crawler.schemas import RawJob
@@ -118,18 +119,25 @@ class BaseSiteCrawler(abc.ABC):
         self._delay = min(self._delay * self._factor, self._max_delay)
         log.warning("%s: 차단 감지 → delay %.1fs → %.1fs", self.source, before, self._delay)
 
-    def save_snapshot(self, name: str, text: str) -> Path:
+    def snapshot_path(self, name: str, suffix: str = ".json") -> Path:
+        return self.snapshot_dir / f"{_SAFE_NAME.sub('_', name)}{suffix}"
+
+    def save_snapshot(self, name: str, text: str, suffix: str = ".json") -> Path:
         """원본 응답 저장. 이름은 덮어쓰기 가능한 결정적 이름을 쓴다."""
-        path = self.snapshot_dir / f"{_SAFE_NAME.sub('_', name)}.json"
+        path = self.snapshot_path(name, suffix)
         path.write_text(text, encoding="utf-8")
         return path
 
     def load_snapshot(self, name: str) -> Any | None:
-        """저장된 원본을 다시 읽는다 (재파싱용)."""
-        path = self.snapshot_dir / f"{_SAFE_NAME.sub('_', name)}.json"
+        """저장된 JSON 원본을 다시 읽는다 (재파싱용)."""
+        path = self.snapshot_path(name)
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def load_html_snapshot(self, name: str) -> str | None:
+        path = self.snapshot_path(name, ".html")
+        return path.read_text(encoding="utf-8") if path.exists() else None
 
     async def get_json(
         self,
@@ -139,6 +147,29 @@ class BaseSiteCrawler(abc.ABC):
         snapshot: str | None = None,
     ) -> Any:
         """JSON GET. 딜레이·재시도·감속·스냅샷을 모두 적용한다."""
+        text = await self.get_text(url, params=params, snapshot=snapshot, suffix=".json")
+        return json.loads(text)
+
+    async def get_soup(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        snapshot: str | None = None,
+    ) -> BeautifulSoup:
+        """HTML GET → BeautifulSoup. 원본은 .html 로 저장된다."""
+        html = await self.get_text(url, params=params, snapshot=snapshot, suffix=".html")
+        return BeautifulSoup(html, "lxml")
+
+    async def get_text(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        snapshot: str | None = None,
+        suffix: str = ".html",
+    ) -> str:
+        """본문 문자열 GET. 딜레이·재시도·감속·스냅샷을 모두 적용한다."""
         if self._client is None:
             raise RuntimeError("async with 로 진입한 뒤 사용하세요.")
 
@@ -166,8 +197,8 @@ class BaseSiteCrawler(abc.ABC):
                     if res.status_code not in RETRY_STATUS:
                         res.raise_for_status()
                         if snapshot:
-                            self.save_snapshot(snapshot, res.text)
-                        return res.json()
+                            self.save_snapshot(snapshot, res.text, suffix)
+                        return res.text
 
                     last_error = httpx.HTTPStatusError(
                         f"{res.status_code} {url}", request=res.request, response=res

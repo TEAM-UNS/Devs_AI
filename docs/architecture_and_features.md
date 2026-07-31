@@ -117,15 +117,73 @@ ai-service/
 | 차단 대응 | 403/429 발생 시 지수 백오프 + delay 1.6배 자동 증가(최대 20초) | — | 재시도 소진 시 해당 페이지 건너뛰고 다음 진행 |
 | 미매칭 태그 리포트 | 사이트가 준 `tags_raw` 중 어떤 별칭에도 걸리지 않은 값을 빈도순으로 출력. 사전 보강 대상 발견용 | — | 자동으로 스킬을 생성하지 않는다. 사람이 판단해 시드에 추가 |
 | 재추출(reparse) | 사전·분류 규칙 변경 후 재수집 없이 재계산. **대상: 스킬 + `field_id` + 연봉 파싱** | — | 원본(`description`, `tags_raw`, `job_categories`)이 없는 행은 스킵 |
+| 스냅샷 재파싱 | `reparse --from-snapshots` — `data/raw/{site}/` 의 저장된 HTML로 **본문까지** 재추출. 네트워크 불필요 | — | 스냅샷 없는 행은 스킵 |
 
 **수집 대상 사이트**
 
-| 사이트 | 방식 | 스택 태그 | 기업정보 |
-|---|---|---|---|
-| 사람인 | HTML 파싱 | 없음(본문 추출) | 사원수·기업형태·매출 |
-| 잡코리아 | HTML 파싱 | 없음(본문 추출) | 사원수·기업형태 |
-| 원티드 | 공개 XHR | 있음 | 기업소개·규모 |
-| 점핏 | 공개 XHR | 있음 | 기업소개·업종 |
+| 사이트 | 방식 | 스택 태그 | 본문 수율 | 상태 |
+|---|---|---|---|---|
+| 사람인 | HTML 파싱 + `view-ajax` | 없음(본문 추출) | 80% | 운영 |
+| 원티드 | 공개 XHR | 있음 | 100% | 운영 |
+| 점핏 | 공개 XHR | 있음 | 98% | 운영 |
+| 잡코리아 | HTML 파싱 | 없음 | 79%(본문) / 15%(스킬) | **보류** |
+
+**실제 엔드포인트** (브라우저 Network 탭에서 확인, 추측 금지)
+
+| 사이트 | 목록 | 상세 |
+|---|---|---|
+| 사람인 | `/zf_user/search/recruit` | `/jobs/relay/view` + **`/jobs/relay/view-ajax?rec_idx=`** |
+| 원티드 | `/api/chaos/navigation/v1/results` (offset 기반) | `/api/chaos/jobs/v1/{id}/details` |
+| 점핏 | `/api/positions` | `/api/position/{id}` |
+
+> **사람인 `view-ajax` 가 필수다.** 상세 페이지의 조건 영역(경력·급여·사원수·매출)은 JS 렌더링이라 httpx로 받으면 비어 있다. `view-ajax` 를 직접 호출하면 Playwright 없이 전부 얻을 수 있다.
+
+> **잡코리아 보류 사유**: 상세 요강이 요약 표뿐이고 실제 기술 나열이 별도 JS 엔드포인트에 있다. 본문 추출은 79%로 개선됐으나 스킬 추출은 15%에 머문다. `sites/jobkorea.py` 와 스냅샷 103건은 보존하며, 엔드포인트를 찾으면 재활성한다.
+
+#### 본문 추출 정책
+
+**추출 순서** — 이 순서를 지켜야 한다.
+
+```
+① 보일러플레이트 제거   nav·header·footer·aside·추천공고·배너·광고
+② 본문 컨테이너 탐색     섹션 앵커 기준 (최대 텍스트 블록 아님)
+③ is_valid_body() 검사
+④ 실패 시에만 이미지 공고 판정
+```
+
+**① 보일러플레이트 제거가 수율을 결정한다.** 이걸 빠뜨리면 네비게이션·추천공고·합격자소서 후기가 본문에 섞여 유효 판정을 통과하지 못한다. 잡코리아 본문 수율이 **18% → 79%** 로 뛴 원인이 이것이다. 개별 별칭 제거(`AI` 등)로 대응하지 말고 소스에서 크롬을 걷어내야 한다.
+
+```python
+BOILERPLATE = ("nav, header, footer, aside, .related, .recommend, "
+               "[class*='banner'], [class*='ad-'], [class*='recommend']")
+```
+
+> `extract_body` 는 반드시 soup **복사본**에서 작업한다. 원본을 `decompose()` 하면 호출부가 나중에 JSON-LD를 읽을 때 사라져 있다.
+
+**③ 유효성 판정은 길이가 아니라 내용으로 한다.**
+
+```python
+def is_valid_body(text: str) -> bool:
+    return bool(SECTION_RE.search(text)) or len(extractor.extract(text)) > 0
+```
+
+길이 기준(`200자 미만`)은 본문의 정의가 아니다. 페이지 안내문이 543자면 정상으로 통과한다. 실패 시 `body_extract_failed=true` 로 표시하고 **집계 쿼리에서 제외**한다.
+
+**`SECTION_RE` 에서 제외할 것** — 요약 표의 라벨은 섹션 헤더가 아니다.
+
+| 제외 | 유지 |
+|---|---|
+| 모집요강 · 모집분야 · 지원자격 | 자격요건 · 우대사항 · 주요업무 · 담당업무 · 필수요건 · 이런 분을 찾아요 |
+
+**④ 이미지 공고 판정은 유효성 검사 실패 후에만.** 순서가 반대면 안내문이 500자를 넘어 이미지 판정이 아예 걸리지 않는다.
+
+이미지 판정에서 **로고·장식은 제외**한다.
+- 파일명·클래스·`alt` 에 `logo|icon|썸네일|로고` 포함
+- 크기 정보가 있고 300px 미만
+
+> 잡코리아 이미지 공고 102건이 전부 회사 로고였다. 이 규칙으로 0건이 되었고, 사람인은 36건이 정상 탐지된다.
+
+**세 상태는 배타적이다**: `정상` / `body_extract_failed` / `body_is_image`
 
 #### 스킬 사전 운영 정책
 
@@ -144,6 +202,19 @@ ai-service/
 **별칭 금지 목록** — 다른 의미와 충돌하므로 등록하지 않는다.
 `node`(k8s 노드) · `compose`(docker compose) · `rest`(영어 단어) · `컨테이너` · `깃` · `비트` · `es`
 시드 스크립트의 `--check` 가 별칭 충돌을 사전 검사한다.
+
+**재현율 측정은 소스별로 분리한다.** 합산 하나로는 어디가 문제인지 보이지 않는다.
+
+```sql
+SELECT source, COUNT(*) total_tags,
+       COUNT(*) FILTER (WHERE matched) matched,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE matched) / COUNT(*), 1) rate
+FROM (...) GROUP BY source;
+```
+
+> 점핏 단독 기준 86.2% 였던 재현율이 원티드를 포함하자 42.6% 로 떨어졌다. 사전이 나빠진 것이 아니라 점핏 단독 측정이 **과대평가**였다. 사이트마다 태그 표기 체계가 다르므로 소스별 측정이 필수다.
+
+미매칭 태그는 **빈도순 상위 40개만** 검토한다. 롱테일은 대부분 1~2회 등장하는 노이즈다.
 
 **기술 분야 8개** (`etc` 버킷 없음)
 `backend` · `frontend` · `mobile` · `data_ai` · `devops` · `security` · `game` · `embedded`
@@ -303,6 +374,81 @@ ai-service/
 **동시성**: `max_jobs=4` (임베딩 API 호출 제한 고려)
 **타임아웃**: `job_timeout=600`
 
+### 3-1. 수집 대상 설정
+
+`crawl_dispatch` 는 아래 설정으로 job 을 팬아웃한다. 총 **18개** job.
+
+```python
+KEYWORDS = ["백엔드", "프론트엔드", "안드로이드", "iOS",
+            "데이터 엔지니어", "DevOps", "정보보안", "임베디드"]
+
+CRAWL_CONFIG = {
+    "jumpit":  {"pages": 40, "keywords": None},   # 개발 직군 전용 → 전체 순회
+    "wanted":  {"pages": 30, "keywords": None},
+    "saramin": {"pages": 8,  "keywords": KEYWORDS},
+    # "jobkorea": 상세 요강이 별도 JS 엔드포인트. 스킬 추출 수율 15%로 보류.
+    #             sites/jobkorea.py 와 스냅샷 103건 보존. 엔드포인트 확인 시 pages 2로 재활성
+}
+```
+
+점핏·원티드에 키워드를 주지 않는 이유: 개발 직군 전용 사이트라 전체를 훑는 편이 낫다.
+사람인·잡코리아는 전 직종이 섞여 있어 키워드로 걸러야 한다.
+
+**페이지당 건수는 사이트별로 다르다.** 첫 수집 시 로그(`{site} {page}페이지: N건`)로 확인해 `pages` 를 조정한다.
+
+### 3-2. 증분 수집 (`skip_seen_days`)
+
+**목록 단계에서 걸러야 한다.** 상세를 받은 뒤 `content_hash` 를 비교하면 요청은 이미 나가 있어 절감 효과가 없다.
+
+```python
+async def crawl_site(ctx, site, keyword, pages, skip_seen_days: int = 7):
+    async with ctx["sessionmaker"]() as s:
+        seen = await repo.recent_source_ids(s, site, days=skip_seen_days)
+
+    async for raw in site_impl.list_jobs(keyword, pages):
+        if raw.source_job_id in seen:
+            stats["skipped_known"] += 1
+            continue                      # ← 상세 요청 자체를 하지 않음
+        detailed = await site_impl.fetch_detail(raw)
+```
+
+| | 목록 요청 | 상세 요청 | 소요 |
+|---|---|---|---|
+| 필터 없음 | 200 | ~4,000 | 2.2시간 |
+| `skip_seen_days=7` | 200 | ~300 (신규만) | **20~40분** |
+
+`7`로 둔 이유: 마감일 변경 등 갱신을 주 1회는 반영한다. 영구 스킵하면 오래된 공고 정보가 고정된다.
+
+### 3-3. 종료 조건
+
+`crawl_site` job 하나는 아래 중 먼저 오는 조건에서 종료된다.
+
+| 조건 | 처리 | `crawl_run.status` |
+|---|---|---|
+| `pages` 도달 | 정상 종료 | `ok` |
+| 목록 결과 소진 (2페이지 이후 0건) | 정상 종료 | `ok` |
+| **1페이지에서 0건** | **예외 발생, 태스크 실패** | `failed` |
+| 재시도 소진 | 해당 페이지 스킵, 다음 페이지 계속 | `ok` (errors 증가) |
+
+```python
+if page == 1 and found == 0:
+    raise SelectorBrokenError(site)   # 파싱 깨짐 → 실패로 마감
+if found == 0:
+    break                              # 결과 소진 → 정상 종료
+```
+
+**1페이지 0건은 반드시 실패로 처리한다.** 검색 결과가 없는 것과 셀렉터가 깨진 것을 구분해야 한다. 조용히 `break` 하면 매일 0건을 수집하면서 정상인 것처럼 보인다.
+
+### 3-4. 전체 배치 완료 추적 — 하지 않음
+
+`crawl_dispatch` 는 enqueue 후 즉시 종료하므로 "오늘 수집 전체 완료" 시점을 알 수 없다. **의도적으로 추적하지 않는다.**
+
+- 임베딩은 각 `crawl_site` 가 개별로 트리거하므로 완료 시점을 알 필요가 없다
+- 05:30 `embed_backfill` 이 누락분을 청소해 결과적 정합성을 보장한다
+- 04:00 시작이 05:30까지 안 끝나는 경우는 다음날 백필이 처리한다
+
+> `batch_id` + Redis 카운터로 완료를 감지하는 방식은 분산 카운터 관리가 붙어 복잡도 대비 이득이 없다. 규모가 커지면 재검토.
+
 ---
 
 ## 4. 스키마 변경 이력
@@ -317,6 +463,7 @@ ai-service/
 | `skill_alias.case_sensitive` | boolean 신규 | 영어 문장의 `can`, `es` 오탐 차단 |
 | `job_posting.salary_period` | varchar(8) 신규 | 월급·시급 혼입으로 중앙값 왜곡 방지 |
 | `tech_field` | `etc` 제거, 8개로 확정 | 매핑 실패와 기타 직무가 섞여 정확도 측정 불가 |
+| `job_posting.body_extract_failed` | boolean 신규 | 본문 추출 실패를 명시. 집계에서 제외 |
 
 ### 마이그레이션 순서 (필수)
 

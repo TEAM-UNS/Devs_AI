@@ -14,6 +14,19 @@ DB 없이 추출기를 테스트할 때 쓰는 픽스처다.
 is_ambiguous
     한 글자거나 일반 단어와 겹치는 스킬(Go · C · R). 문맥 단서가 있을 때만
     채택한다. 자세한 규칙은 extractor.AMBIGUOUS_WINDOW 참고.
+
+is_common
+    전 직군 공통 도구(Git · Jira · Slack · Notion · Confluence).
+    트렌드 집계에서 기본 제외한다. Figma · Linux 는 플래그하지 않는다 —
+    디자인 협업·인프라라는 직군 신호가 실제로 있기 때문이다.
+
+cs_aliases (case sensitive)
+    대소문자를 구분해 매칭할 별칭. 영어 문장에 흔한 짧은 토큰이 대상이다.
+        CAN  "you can use..." 의 can
+        ES   스페인어·복수형 접미사 등
+        R/C  문장 중간의 한 글자
+    문맥 게이트가 있긴 하지만, 영문 공고가 많은 사이트가 들어오면 게이트만으로는
+    뚫린다. 애초에 매칭이 안 되게 막는 쪽이 확실하다.
 """
 
 from __future__ import annotations
@@ -37,14 +50,29 @@ class SkillSeed:
     fields: tuple[TechField, ...]
     aliases: tuple[str, ...] = field(default_factory=tuple)
     is_ambiguous: bool = False
+    is_common: bool = False
+    # 대소문자를 구분해 매칭할 별칭. 정규 표기도 여기 넣을 수 있다.
+    cs_aliases: tuple[str, ...] = field(default_factory=tuple)
 
     def all_aliases(self) -> list[str]:
-        """정규 표기를 포함한 소문자 별칭 목록 (중복 제거)."""
+        """정규 표기를 포함한 소문자 별칭 목록 (중복 제거).
+
+        cs_aliases 로 지정된 표기는 대소문자를 구분해야 하므로 여기서 뺀다.
+        """
+        excluded = {a.lower() for a in self.cs_aliases}
         seen: dict[str, None] = {}
         for alias in (self.name, *self.aliases):
             key = alias.strip().lower()
-            if key:
+            if key and key not in excluded:
                 seen.setdefault(key, None)
+        return list(seen)
+
+    def all_cs_aliases(self) -> list[str]:
+        """대소문자를 구분해 매칭할 별칭 (원래 표기 그대로)."""
+        seen: dict[str, None] = {}
+        for alias in self.cs_aliases:
+            if alias.strip():
+                seen.setdefault(alias.strip(), None)
         return list(seen)
 
 
@@ -86,11 +114,25 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("FastAPI", "framework", (_B, _D), ("fast api", "패스트api")),
     SkillSeed("Flask", "framework", (_B,), ("플라스크",)),
     SkillSeed("Go", "language", (_B, _O), ("golang", "고랭", "go언어"), is_ambiguous=True),
+    SkillSeed(
+        "Elasticsearch",
+        "database",
+        (_D, _B),
+        ("엘라스틱서치", "elastic search", "elk", "elk 스택"),
+        cs_aliases=("ES",),
+    ),
     SkillSeed("Ruby on Rails", "framework", (_B,), ("rails", "레일즈", "루비온레일즈")),
     SkillSeed("PHP", "language", (_B,), ("피에이치피",)),
     SkillSeed("Laravel", "framework", (_B,), ("라라벨",)),
     SkillSeed("ASP.NET", "framework", (_B,), ("asp.net core", "닷넷", ".net", "dotnet")),
     SkillSeed("MySQL", "database", (_B, _D), ("마이에스큐엘", "mariadb", "마리아db")),
+    SkillSeed("Oracle", "database", (_B, _D), ("오라클", "oracle db", "oracle database")),
+    SkillSeed("RabbitMQ", "infra", (_B,), ("래빗엠큐", "rabbit mq")),
+    SkillSeed("Apache Tomcat", "infra", (_B,), ("tomcat", "톰캣")),
+    SkillSeed("JUnit", "tool", (_B,), ("제이유닛", "junit5")),
+    SkillSeed("QueryDSL", "library", (_B,), ("쿼리dsl", "query dsl")),
+    SkillSeed("Supabase", "platform", (_B,), ("수파베이스",)),
+    SkillSeed("Solidity", "language", (_B,), ("솔리디티",)),
     SkillSeed("PostgreSQL", "database", (_B, _D), ("포스트그레", "postgres", "psql")),
     SkillSeed("Redis", "database", (_B, _O), ("레디스",)),
     SkillSeed("MongoDB", "database", (_B, _D), ("몽고db", "몽고디비", "mongo")),
@@ -109,9 +151,10 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Angular", "framework", (_F,), ("앵귤러", "angularjs")),
     SkillSeed("Svelte", "framework", (_F,), ("스벨트", "sveltekit")),
     SkillSeed("HTML", "markup", (_F,), ("html5", "에이치티엠엘")),
-    SkillSeed("CSS", "style", (_F,), ("css3", "씨에스에스")),
+    SkillSeed("CSS", "style", (_F,), ("css3", "css 3", "씨에스에스")),
+    SkillSeed("React Query", "library", (_F,), ("리액트쿼리", "tanstack query")),
     SkillSeed("Sass", "style", (_F,), ("scss", "사스")),
-    SkillSeed("Tailwind CSS", "style", (_F,), ("tailwind", "테일윈드")),
+    SkillSeed("Tailwind CSS", "style", (_F,), ("tailwind", "tailwindcss", "테일윈드")),
     SkillSeed("Redux", "library", (_F,), ("리덕스", "redux toolkit")),
     SkillSeed("Zustand", "library", (_F,), ("주스탠드",)),
     SkillSeed("Webpack", "tool", (_F,), ("웹팩",)),
@@ -136,7 +179,7 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Xcode", "tool", (_M,), ("엑스코드",)),
     # ══ data / AI ════════════════════════════════════════════════════════
     SkillSeed("Python", "language", (_D, _B), ("파이썬",)),
-    SkillSeed("R", "language", (_D,), ("r언어", "알언어"), is_ambiguous=True),
+    SkillSeed("R", "language", (_D,), ("r언어", "알언어"), is_ambiguous=True, cs_aliases=("R",)),
     SkillSeed("SQL", "language", (_D, _B), ("에스큐엘",)),
     SkillSeed("PyTorch", "framework", (_D,), ("파이토치", "torch")),
     SkillSeed("TensorFlow", "framework", (_D,), ("텐서플로", "텐서플로우", "tensorflow2")),
@@ -146,11 +189,19 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Spark", "infra", (_D,), ("아파치 스파크", "apache spark", "pyspark")),
     SkillSeed("Hadoop", "infra", (_D,), ("하둡", "hdfs")),
     SkillSeed("Airflow", "tool", (_D, _O), ("에어플로우", "apache airflow")),
-    SkillSeed("Elasticsearch", "database", (_D, _B), ("엘라스틱서치", "elastic search")),
     SkillSeed("LangChain", "framework", (_D,), ("랭체인", "lang chain")),
     SkillSeed("Hugging Face", "platform", (_D,), ("허깅페이스", "huggingface", "transformers")),
     SkillSeed("OpenCV", "library", (_D, _E), ("오픈시브이", "open cv")),
     SkillSeed("MLflow", "tool", (_D,), ("ml flow", "엠엘플로우")),
+    # 사이트가 "AI/인공지능" 같은 분야명을 태그로 주는 경우가 많다.
+    # 단독 "AI" 는 별칭에 넣지 않는다 — "AI추천공고", "AI면접" 같은 사이트 UI 문구에
+    # 걸려 오탐이 난다(진단에서 실제로 확인). 한글 표기만으로도 충분히 잡힌다.
+    SkillSeed(
+        "AI/ML",
+        "domain",
+        (_D,),
+        ("ai/인공지능", "인공지능", "머신러닝", "machine learning", "딥러닝", "deep learning"),
+    ),
     SkillSeed("Tableau", "tool", (_D,), ("태블로",)),
     SkillSeed("dbt", "tool", (_D,), ("data build tool",)),
     # ══ devops ═══════════════════════════════════════════════════════════
@@ -160,6 +211,7 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("GCP", "cloud", (_O,), ("google cloud", "구글 클라우드")),
     SkillSeed("Azure", "cloud", (_O,), ("애저", "microsoft azure")),
     SkillSeed("Terraform", "tool", (_O,), ("테라폼",)),
+    SkillSeed("VMware", "infra", (_O,), ("브이엠웨어", "vm ware", "vsphere")),
     SkillSeed("Jenkins", "tool", (_O,), ("젠킨스",)),
     SkillSeed("GitHub Actions", "tool", (_O,), ("깃허브 액션", "github action")),
     SkillSeed("GitLab CI", "tool", (_O,), ("gitlab ci/cd", "깃랩 ci")),
@@ -203,26 +255,50 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Blender", "tool", (_G,), ("블렌더",)),
     SkillSeed("게임서버", "domain", (_G, _B), ("게임 서버", "game server")),
     # ══ embedded ═════════════════════════════════════════════════════════
-    SkillSeed("C", "language", (_E, _G), ("c언어", "씨언어"), is_ambiguous=True),
+    SkillSeed("C", "language", (_E, _G), ("c언어", "씨언어"), is_ambiguous=True, cs_aliases=("C",)),
     SkillSeed("RTOS", "os", (_E,), ("실시간 운영체제",)),
     SkillSeed("FreeRTOS", "os", (_E,), ("free rtos", "프리rtos")),
     SkillSeed("Embedded Linux", "os", (_E,), ("임베디드 리눅스",)),
     SkillSeed("ARM", "hardware", (_E,), ("arm cortex", "cortex-m")),
     SkillSeed("STM32", "hardware", (_E,), ("stm 32",)),
     SkillSeed("Arduino", "hardware", (_E,), ("아두이노",)),
+    SkillSeed("MCU", "hardware", (_E,), ("마이크로컨트롤러", "micro controller")),
+    # 소문자 "qt" 는 드물지만 영문 약어와 겹칠 수 있어 대문자 표기만 잡는다.
+    SkillSeed("Qt", "framework", (_E, _G), ("큐티 프레임워크",), cs_aliases=("Qt", "QT")),
     SkillSeed("Raspberry Pi", "hardware", (_E,), ("라즈베리파이", "라즈베리 파이")),
-    # 이름이 영어 조동사 "can" 과 같다. 반드시 문맥 검사를 거치게 한다.
-    SkillSeed("CAN", "protocol", (_E,), ("can 통신", "canbus", "can bus"), is_ambiguous=True),
+    # 이름이 영어 조동사 "can" 과 같다. 대소문자 구분 + 문맥 검사 이중으로 막는다.
+    SkillSeed(
+        "CAN",
+        "protocol",
+        (_E,),
+        ("can 통신", "canbus", "can bus"),
+        is_ambiguous=True,
+        cs_aliases=("CAN",),
+    ),
     SkillSeed("AUTOSAR", "framework", (_E,), ("오토사",)),
     SkillSeed("Verilog", "hdl", (_E,), ("베릴로그", "systemverilog")),
     SkillSeed("VHDL", "hdl", (_E,), ("브이에이치디엘",)),
     SkillSeed("Yocto", "tool", (_E,), ("욕토", "yocto project")),
     SkillSeed("펌웨어", "domain", (_E,), ("firmware", "펌웨어 개발")),
     SkillSeed("I2C", "protocol", (_E,), ("i2c 통신", "spi")),
-    # ══ 공통 도구 ════════════════════════════════════════════════════════
+    # ══ 공통 도구 (is_common — 트렌드 집계에서 기본 제외) ═════════════════
+    # 전 직군이 다 쓰므로 "요즘 뜨는 기술" 목록 상위를 의미 없이 차지한다.
+    # 다만 기업 프로필에서는 협업 환경 정보로 유효해서 지우지는 않는다.
     # "깃" 단독은 깃발·깃들다 등과 겹쳐 넣지 않는다.
-    SkillSeed("Git", "tool", (_B, _F, _M, _D, _O), ("github", "깃허브", "gitlab", "깃랩")),
-    SkillSeed("Jira", "tool", (_B, _F, _M), ("지라", "atlassian jira")),
+    SkillSeed(
+        "Git",
+        "tool",
+        (_B, _F, _M, _D, _O),
+        ("github", "깃허브", "gitlab", "깃랩"),
+        is_common=True,
+    ),
+    SkillSeed("Jira", "tool", (_B, _F, _M), ("지라", "atlassian jira"), is_common=True),
+    SkillSeed("Slack", "tool", (_B, _F, _M, _D, _O), ("슬랙",), is_common=True),
+    SkillSeed("Notion", "tool", (_B, _F, _M, _D, _O), ("노션",), is_common=True),
+    SkillSeed("Confluence", "tool", (_B, _F, _M), ("컨플루언스",), is_common=True),
+    # Figma · Linux 는 일부러 is_common 이 아니다. 디자인 협업·인프라라는
+    # 직군 신호가 실제로 있어서 트렌드에서 빼면 정보가 사라진다.
+    SkillSeed("Figma", "tool", (_F, _M), ("피그마",)),
 )
 
 
