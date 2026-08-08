@@ -22,6 +22,13 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
+    # ★ 도커 기본 /dev/shm 은 64MB 다. 아래 command 의 병렬 인덱스 빌드 설정과
+    #   조합하면 HNSW 생성이 반드시 실패한다:
+    #     could not resize shared memory segment to 533794304 bytes:
+    #     No space left on device
+    #   maintenance_work_mem 을 병렬 워커가 공유메모리로 나눠 갖기 때문이다.
+    #   실제로 벡터 14,322개에 인덱스를 걸다 이걸로 막혔다.
+    shm_size: 1gb
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
@@ -34,6 +41,13 @@ services:
       - "maintenance_work_mem=512MB"
       - "-c"
       - "max_parallel_maintenance_workers=4"
+      # ★ 이게 없으면 HNSW 인덱스를 만들어 놓고도 안 쓴다.
+      #   pgvector 의 인덱스 시작비용 추정이 커서, 기본값 4.0 에서는 플래너가
+      #   순차 스캔이 더 싸다고 판단한다. 실측(청크 14,322개):
+      #       순차 스캔 61.1ms  vs  HNSW 1.0ms  → 61배
+      #   결과는 맞고 느리기만 해서 알아채기 어렵다. SSD 기준값 1.1 로 낮춘다.
+      - "-c"
+      - "random_page_cost=1.1"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobstack} -d ${POSTGRES_DB:-jobstack}"]
       interval: 5s
@@ -55,6 +69,41 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # ── arq 워커 (cron 상시 운영) ──────────────────────────────────────────
+  # 04:00 crawl_dispatch · 05:30 embed_backfill · 06:00 embed_companies
+  #
+  # restart: unless-stopped 라 노트북을 껐다 켜도 도커가 알아서 다시 띄운다.
+  # crawl_dispatch 는 run_at_startup=True 라 기동 시 그날 몫을 한 번 채우고,
+  # 같은 날 재기동은 _job_id(날짜 포함) + keep_result=86400 으로 걸러진다.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jobstack-worker
+    container_name: jobstack-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # ★ .env 의 값은 호스트 기준(localhost:5440 / 6390)이라 컨테이너
+      #   안에서는 안 닿는다. 서비스 이름 + 내부 포트로 덮어쓴다.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobstack}:${POSTGRES_PASSWORD:-jobstack}@postgres:5432/${POSTGRES_DB:-jobstack}
+      REDIS_URL: redis://redis:6379/0
+      # 컨테이너 로그 시각을 호스트와 맞춘다. cron 이 로컬 시각 기준이라
+      # 이게 어긋나면 04:00 이 엉뚱한 시각에 뜬다.
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      # 수집 원본 스냅샷. 파서가 깨졌을 때 재수집 없이 재파싱하려면
+      # 호스트에서도 보여야 한다.
+      - ./data/raw:/app/data/raw
+    # 워커가 죽으면 알 수 있게. arq 는 헬스체크 키를 redis 에 남긴다.
+    stop_grace_period: 30s
 
 volumes:
   pgdata:

@@ -10,16 +10,141 @@
 
 ```bash
 cp .env.example .env      # 값 채우기
-docker compose up -d      # postgres(pgvector) + redis, init.sql 자동 실행
+docker compose up -d      # postgres(pgvector) + redis + arq worker
 uv sync
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
+```
+
+`docker compose up -d` 는 워커까지 띄운다(`restart: unless-stopped`). 코드를
+고치면서 워커만 따로 돌리고 싶으면 컨테이너를 멈추고 로컬에서 띄운다:
+
+```bash
+docker compose stop worker
 uv run arq app.worker.WorkerSettings
+```
+
+워커 이미지는 소스를 복사해 굽는다. 코드를 고쳤으면 다시 빌드해야 반영된다:
+
+```bash
+docker compose up -d --build worker
 ```
 
 스키마를 처음부터 다시 만들려면:
 
 ```bash
 docker compose down -v && docker compose up -d
+```
+
+### 초기 적재 순서 (★ 지킬 것)
+
+HNSW 인덱스는 **데이터를 넣은 뒤**에 만든다. 빈 테이블에 먼저 걸면 INSERT
+마다 그래프를 갱신하느라 초기 적재가 몇 배 느려진다.
+
+```bash
+uv run alembic upgrade head                       # ① 스키마 (벡터 인덱스 없음)
+uv run python -m scripts.seed_skills              # ② 스킬 사전
+uv run python -m app.cli crawl --site jumpit --pages 40   # ③ 수집
+uv run python -m app.cli embed                    # ④ 임베딩
+uv run python -m app.cli vector-index --build     # ⑤ HNSW 인덱스
+```
+
+인덱스가 없어도 벡터 검색은 순차 스캔으로 동작한다. ⑤ 를 잊어도 조용히
+틀리지는 않고 느려질 뿐이다.
+
+### CLI
+
+```bash
+python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 --skip-seen-days 7
+python -m app.cli embed --limit 100           # 실제 임베딩 API 사용
+python -m app.cli embed --fake                # API 키 없이 파이프라인만 확인
+python -m app.cli embed --companies           # 기업 프로필 임베딩
+python -m app.cli vector-index --build        # 적재 후 HNSW 생성
+```
+
+**파서를 고친 뒤 백필** — `--force-reextract` 가 필요하다:
+
+```bash
+python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 \
+    --skip-seen-days 0 --force-reextract
+```
+
+`content_hash` 는 **사이트가 준 원문으로만** 계산한다. 우리 파서가 바뀐 것은
+해시에 반영되지 않으므로(`employment_type` 은 해시에 아예 없다), 그냥
+재수집하면 해시가 같아 `touch` 만 하고 지나간다 — "재수집했는데 아무것도 안
+바뀜" 이 된다. `--force-reextract` 는 해시가 같아도 다시 적재한다. 본문은
+그대로이므로 재임베딩 큐에는 넣지 않는다.
+
+### 배치 (arq)
+
+| 시각 | 태스크 | 내용 | 재시도 |
+|---|---|---|---|
+| 04:00 | `crawl_dispatch` | CRAWL_CONFIG 대로 `crawl_site` **10개** 팬아웃 | 1 |
+| — | `crawl_site` | 수집 → upsert → 변경분 `embed_postings` enqueue | 3 |
+| — | `embed_postings` | 청크 분할 → 배치 임베딩 → upsert | 3 |
+| 05:30 | `embed_backfill` | 누락·실패분 최대 `EMBED_BACKFILL_LIMIT` 건 | 2 |
+| 06:00 | `embed_companies` | 기업 설명 변경분 | 2 |
+
+10개 = 점핏 1 + 원티드 1 + 사람인 8(키워드). 잡코리아는 스킬 수율 15% 라
+배치에서 빠져 있다(DECISIONS.md). 어댑터는 남아 있어 수동 실행·재파싱에는 쓴다.
+
+같은 날 같은 (사이트, 키워드) 는 `_job_id = crawl:{site}:{keyword}:{date}` 로
+중복 큐잉이 차단된다. "오늘 수집 전체 완료" 시점은 **의도적으로 추적하지
+않는다** — 05:30 백필이 누락분을 청소해 결과적 정합성을 보장한다.
+
+### 노트북에서 상시 운영하기
+
+새벽 4시에 노트북이 꺼져 있으면 그날 수집은 없던 일이 된다. 그래서:
+
+- `cron(crawl_dispatch, hour=4, minute=0, run_at_startup=True)` — 기동 시 1회
+- `keep_result = 86400` — **중복 차단이 여기 달려 있다.** arq 는 결과가
+  만료되면 그 `_job_id` 를 처음 보는 것으로 취급한다. 기본값 3600 이면
+  1시간 뒤 차단이 풀려서, 워커를 재시작할 때마다 같은 날 수집을 처음부터
+  다시 돌린다.
+- compose `worker` 서비스가 `restart: unless-stopped` 로 떠 있다.
+
+같은 날 두 번째 기동은 로그에 이렇게 남는다:
+
+```
+crawl_dispatch: 0건 enqueue (중복 차단 10)
+```
+
+### 임베딩 레이트리밋
+
+Voyage 계정에 결제수단이 없으면 **3 RPM · 10K TPM** 으로 묶인다. 명세의
+96개 배치는 이 한도를 그냥 넘어 매 요청이 429 로 튕기므로, 어댑터가
+`EMBED_RPM` · `EMBED_TPM` 을 보고 **보내기 전에** 창을 기다린다.
+
+```
+EMBED_RPM=3               # 0 이면 클라이언트 제한 없음(유료 등급)
+EMBED_TPM=10000
+EMBED_BACKFILL_LIMIT=100  # 무료 등급 기준. 표준 등급이면 500
+EMBED_ENQUEUE_CHUNK=40    # crawl_site → embed_postings 한 job 당 공고 수. 0=쪼개지 않음
+```
+
+무료 등급 실측: 공고 60건(청크 173개) 임베딩에 약 4분 — **분당 12건**.
+그 속도로는 500건 백필이 `job_timeout=600` 안에 못 끝나 태스크가 통째로
+잘리므로, 백필 100건 · enqueue 40건으로 낮춰 뒀다.
+
+**백로그가 쌓이면 백필로는 못 따라잡는다.** `EMBED_BACKFILL_LIMIT=100` 은
+하루 100건이다. 대량 수집 직후처럼 미임베딩이 수천 건이면 몇 주가 걸리므로,
+그때는 표준 등급으로 올리거나 `python -m app.cli embed` 를 직접 오래 돌린다.
+
+```sql
+-- 남은 임베딩 대상
+SELECT COUNT(*) FROM market.job_posting
+WHERE description IS NOT NULL AND body_is_image = false
+  AND body_extract_failed = false
+  AND (embed_hash IS NULL OR embed_hash IS DISTINCT FROM content_hash);
+```
+
+결제수단을 등록해 표준 등급으로 올린 뒤에는 네 값을 되돌린다:
+
+```
+EMBED_RPM=0
+EMBED_TPM=0
+EMBED_BACKFILL_LIMIT=500
+EMBED_ENQUEUE_CHUNK=0
 ```
 
 ## Windows 개발 환경 주의
@@ -98,7 +223,9 @@ R3 은 DB 레벨에서도 강제된다. 운영 접속을 `ai_crawler`(market RW)
 
 - 벡터 차원은 **1024 고정**. `.env` 의 `EMBED_DIM` 과 `init.sql` 의
   `vector(1024)` 가 어긋나면 INSERT 단계에서 터진다.
-- 벡터 인덱스는 HNSW(코사인). 데이터가 적을 때 만들어 두고 이후 점진 반영.
+- 벡터 인덱스는 HNSW(코사인). **마이그레이션이 만들지 않는다** —
+  DDL 은 `app/domains/market/vector_index.py` 에 있고 적재가 끝난 뒤
+  `app.cli vector-index --build` 로 세운다. 위 "초기 적재 순서" 참고.
 - LangGraph checkpointer 테이블은 앱 기동 시 `.setup()` 이 `chat` 스키마에
   생성한다. alembic 관리 대상이 아니다.
 - 스키마 변경은 `models.py` → autogenerate → 리뷰 순서로 하고,

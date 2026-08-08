@@ -54,3 +54,9 @@ desktop.ini
 
 # ── 도커 ────────────────────────────────────────────────────────────────────
 docker-compose.override.yml
+# 인계용 덤프. 70MB+ 라 커밋하지 않는다.
+handoff/
+market-handoff-*.zip
+market-handoff-*.tar.gz
+csv-export/
+market-csv-*.zip

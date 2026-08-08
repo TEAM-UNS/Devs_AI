@@ -1,5 +1,92 @@
 # 결정 로그
 
+## ON CONFLICT 갱신 목록은 테스트로 강제한다 (프롬프트 5)
+employment_type · salary_period · body_extract_failed 세 컬럼이 upsert_posting 의
+INSERT 값에는 있는데 ON CONFLICT DO UPDATE 의 set_ 에는 없었다. 결과는
+**신규 공고만 값이 차고 기존 공고는 몇 번을 재수집해도 옛날 값 그대로** —
+파서를 고치고 --force-reextract 로 전량 재수집을 돌렸는데 215건 중 67건만
+채워지는 것으로 드러났다.
+컬럼을 늘릴 때마다 사람이 두 목록을 대조하는 방식은 실패한다. set_ 구성을
+_conflict_update_set() 으로 분리하고, tests/test_upsert_columns.py 가
+service 의 INSERT 컬럼과 자동 대조한다.
+body_is_image · body_extract_failed 는 COALESCE 가 아니라 덮어쓰기다 —
+매 파싱의 판정이라 COALESCE 하면 한 번 true 가 된 공고가 영원히 true 로 남는다.
+
+## 죽은 태스크의 running 행은 기동 시 정리한다 (프롬프트 5)
+워커가 SIGKILL 되면 finish_run 이 불리지 못해 crawl_run 이 영원히 running 으로
+남는다(실제로 재시작 두 번에 6건이 쌓였다). worker.startup 이 job_timeout 의
+2배를 넘긴 running 행을 failed 로 마감한다.
+기준을 job_timeout 보다 길게 잡는 이유: 그 시간을 넘겨 살아 있는 태스크는 없으므로
+동시에 도는 CLI 수집이나 다른 워커의 실행을 잘못 죽이지 않는다.
+
+## RawJob 은 extra="forbid" (프롬프트 5)
+employment_type 사고의 재발 방지. 어댑터가 정의되지 않은 필드를 넘기면 즉시 터진다.
+상세 경로의 model_copy(update=) 는 검증을 건너뛰므로 RawJob.merged() 로 바꿨다 —
+재검증하지 않으면 forbid 가 상세 경로에서 무력화된다.
+스냅샷 전량(상세 672건 · 목록 723건) 재파싱으로 다른 누락 필드 없음을 확인했다.
+
+## 사람인 라벨 값에서 button·툴팁만 걷어낸다 (프롬프트 5)
+근무형태 dd 안에 "상세보기" 버튼과 툴팁 div 가 들어 있어 값이 오염됐다.
+★ <a> 는 지우지 않는다 — 홈페이지 값이 스냅샷 228건 대부분에서 <a> 안에만 있어
+앵커를 지우면 company.homepage 가 통째로 빈다.
+실측(스냅샷 278건): 근무형태 평균 17.2자 → 9.9자, 최대 28자(컬럼 상한 30),
+"상세보기" 잔존 0건, 빈 값 0건.
+
+## content_hash 는 파서 수정을 감지하지 못한다 (프롬프트 5)
+해시는 사이트가 준 원문으로만 계산한다. employment_type 은 해시에 아예 없어서,
+파서를 고치고 재수집해도 해시가 같으면 touch 만 하고 지나간다 — NULL 이 그대로다.
+그래서 --force-reextract 를 뒀다. 해시에 employment_type 을 넣는 방법도 있지만,
+그러면 전체 공고가 '변경됨' 으로 잡혀 재임베딩까지 딸려온다(무료 등급 분당 12건).
+force_reextract 로 다시 쓴 건은 본문이 그대로이므로 임베딩 큐에 넣지 않는다.
+
+## keep_result = 86400 (프롬프트 5)
+중복 큐잉 차단이 여기 달려 있다. arq 는 결과가 만료되면 그 _job_id 를 처음 보는
+것으로 취급한다. 기본값 3600 이면 1시간 뒤 차단이 풀려서, run_at_startup 과 겹치면
+워커를 재시작할 때마다 같은 날 수집을 처음부터 다시 돌린다.
+
+## run_at_startup=True (프롬프트 5)
+노트북 운영이라 새벽 4시에 워커가 꺼져 있을 수 있다. 기동 시 1회 돌려 그날 몫을
+채운다. 중복은 _job_id(날짜) + keep_result 로 막는다.
+
+## 잡코리아는 배치에서 제외, 어댑터는 보존 (프롬프트 5)
+CRAWL_CONFIG 10개 = 점핏 1 + 원티드 1 + 사람인 8. 스킬 수율 15% 인 공고를 매일
+수집하면 트렌드 집계의 분모만 늘어난다. SITE_CLASSES 에는 남겨 수동 실행·스냅샷
+재파싱에 쓴다. 엔드포인트를 찾으면 CRAWL_CONFIG 에 한 줄 추가하면 끝이다.
+
+## 증분 필터는 목록 단계에서 건다 (프롬프트 4)
+상세를 받은 뒤 content_hash 를 비교하면 요청이 이미 나가 있어 절감이 0이다.
+crawl_site 진입 시 최근 7일 source_job_id 를 한 번 조회해 두고 목록에서 거른다.
+점핏 2페이지 실측: 34요청 29.6초 → 2요청 5.2초 (skipped_known=32).
+
+## 1페이지 0건은 실패로 마감 (프롬프트 4)
+"검색 결과 없음"과 "셀렉터 깨짐"은 구분해야 한다. 조용히 break 하면 매일 0건을
+수집하면서 crawl_run 은 success 로 남는다. SelectorBrokenError → status='failed'.
+2페이지 이후 0건만 정상 종료(결과 소진).
+
+## 전체 배치 완료는 추적하지 않는다 (프롬프트 4)
+crawl_dispatch 는 enqueue 후 즉시 끝난다. batch_id + Redis 카운터로 완료를
+감지하는 구조는 분산 카운터 관리가 붙어 복잡도 대비 이득이 없다.
+05:30 embed_backfill 이 누락분을 청소해 결과적 정합성을 보장한다.
+
+## HNSW 인덱스는 적재 후에 만든다 (프롬프트 4)
+빈 테이블에 먼저 걸면 INSERT 마다 그래프를 갱신해 초기 적재가 몇 배 느려진다.
+마이그레이션(4c1f9a7d2e08)이 baseline 의 인덱스를 떼어내고,
+DDL 은 market/vector_index.py 에 두어 `app.cli vector-index --build` 로 세운다.
+인덱스가 없어도 검색은 순차 스캔으로 동작한다 — 느릴 뿐 틀리지 않는다.
+
+## 임베딩 레이트리밋은 클라이언트에서 먼저 지킨다 (프롬프트 4)
+Voyage 무료 등급은 3 RPM · 10K TPM. 96개 배치는 한도를 그냥 넘어 매 요청이
+429 로 튕긴다. 429 를 맞고 백오프하는 방식은 (1) 실패 로그가 정상처럼 쌓이고
+(2) 지수 백오프 1·2·4초로는 1분 창을 못 넘겨 재시도를 그대로 태워 먹는다.
+보내기 전에 슬라이딩 윈도우를 확인해 기다리고, 추정 오차 대비 20% 여유를 둔다.
+결제수단 등록 후에는 EMBED_RPM/EMBED_TPM 을 0 으로 되돌린다.
+
+## RawJob.employment_type 누락 (프롬프트 4)
+세 어댑터 모두 값을 만들어 넘기는데 RawJob 에 필드가 없어 pydantic 이 조용히
+버렸다(job_posting.employment_type 660건 전부 NULL). service._save_one 이 그
+필드를 읽으므로 목록 생성 경로에서는 AttributeError 로 적재가 통째로 실패한다.
+필드 추가로 해결. 과거 행은 reparse 로는 복구되지 않고 재수집이 필요하다.
+
 ## 잡코리아 보류 (프롬프트 3)
 상세 요강이 요약 표뿐이고 실제 기술 나열은 별도 JS 엔드포인트.
 본문 수율 79%(보일러플레이트 제거 후) / 스킬 수율 15%.
