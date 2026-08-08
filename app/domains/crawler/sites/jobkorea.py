@@ -230,7 +230,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
         clean["detail_fetched"] = True
         clean["body_is_image"] = update.get("body_is_image", False)
         clean["body_extract_failed"] = update.get("body_extract_failed", True)
-        return job.model_copy(update=clean)
+        return job.merged(clean)
 
     @staticmethod
     def extract_body(soup: BeautifulSoup) -> dict[str, Any]:

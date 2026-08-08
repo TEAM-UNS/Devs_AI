@@ -158,8 +158,8 @@ class JumpitCrawler(BaseSiteCrawler):
         location = result.get("location")
         man_idx = result.get("manDbMcomIdx")
 
-        return job.model_copy(
-            update={
+        return job.merged(
+            {
                 "detail_fetched": True,
                 "title": result.get("title") or job.title,
                 "company_name": result.get("companyName") or job.company_name,

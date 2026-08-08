@@ -206,4 +206,4 @@ class WantedCrawler(BaseSiteCrawler):
         clean = {k: v for k, v in update.items() if v not in (None, "", [])}
         clean["detail_fetched"] = True
         clean["body_extract_failed"] = update["body_extract_failed"]
-        return job.model_copy(update=clean)
+        return job.merged(clean)

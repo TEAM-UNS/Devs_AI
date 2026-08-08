@@ -297,7 +297,7 @@ class SaraminCrawler(BaseSiteCrawler):
         # False 도 의미 있는 값이라 위 필터에서 걸러지지 않게 다시 넣는다.
         clean["body_is_image"] = update.get("body_is_image", False)
         clean["body_extract_failed"] = update.get("body_extract_failed", body is None)
-        return job.model_copy(update=clean)
+        return job.merged(clean)
 
     @staticmethod
     def _company_csn(soup: BeautifulSoup) -> str | None:

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -163,6 +164,40 @@ def normalize_label(text: str) -> str:
     return _LABEL_NOISE.sub("", text or "").strip()
 
 
+# 값 노드 안에 섞여 있는 UI 부속. 텍스트로 뽑기 전에 걷어낸다.
+#
+# 사람인 근무형태 dd 는 이렇게 생겼다.
+#     <dd><strong>정규직, 병역특례</strong>
+#         <div class="toolTipWrap">
+#           <button><span class="blind">근무형태</span><span>상세보기</span></button>
+#           <div>정규직 수습기간 3개월 … 닫기</div>
+#         </div></dd>
+# 그대로 get_text 하면 "정규직, 병역특례 근무형태 상세보기 정규직 수습기간…" 이
+# 되고, varchar(30) 에 잘려 들어가 값이 통째로 쓰레기가 된다.
+#
+# ★ <a> 는 지우지 않는다. 홈페이지 값은 스냅샷 228건 중 대부분이 <a> 안에만
+#   있어서, 앵커를 지우면 company.homepage 가 통째로 빈다. 실제 노이즈원은
+#   button 과 툴팁 컨테이너다 (스냅샷 278건 실측: 근무형태 평균 17.2자 →
+#   9.9자, "상세보기" 잔존 0건, 빈 값 0건).
+VALUE_CHROME = (
+    "script, style, button, "
+    "[class*='tooltip' i], [class*='tip_' i], [role='dialog'], [role='tooltip'], "
+    ".blind, .sr-only, .screen_out, [aria-hidden='true'], [hidden]"
+)
+
+
+def clean_value_text(node: Tag) -> str:
+    """값 노드에서 UI 부속을 걷어낸 텍스트.
+
+    ★ 반드시 복사본에서 작업한다. 원본을 decompose 하면 같은 soup 을 나중에
+      읽는 호출부(JSON-LD · 본문 추출)에서 노드가 사라져 있다.
+    """
+    duplicate = copy.copy(node)
+    for junk in duplicate.select(VALUE_CHROME):
+        junk.decompose()
+    return duplicate.get_text(" ")
+
+
 def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
     """페이지의 모든 라벨-값 쌍을 dict 로 만든다.
 
@@ -184,20 +219,20 @@ def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
         for term in terms:
             value_node = term.find_next_sibling("dd")
             if value_node is not None:
-                put(term.get_text(" "), value_node.get_text(" "))
+                put(term.get_text(" "), clean_value_text(value_node))
 
     # table > th/td — 같은 행의 th 다음 td, 또는 세로형 테이블
     for header in soup.find_all("th"):
         value_node = header.find_next_sibling("td")
         if value_node is not None:
-            put(header.get_text(" "), value_node.get_text(" "))
+            put(header.get_text(" "), clean_value_text(value_node))
 
     # 클래스명이 tit/desc, tit/txt, title/content 로 짝지어진 흔한 패턴.
     # 클래스명에 의존하지만 어디까지나 보조 수단이다.
     for holder in soup.find_all(class_=re.compile(r"(tit|title|label|term)", re.IGNORECASE)):
         sibling = holder.find_next_sibling()
         if sibling is not None and sibling.name not in ("script", "style"):
-            put(holder.get_text(" "), sibling.get_text(" "))
+            put(holder.get_text(" "), clean_value_text(sibling))
 
     return pairs
 
