@@ -1,10 +1,16 @@
-"""크롤러 CLI.
+"""크롤러 · 임베딩 CLI.
 
     python -m app.cli inspect --site jumpit [--page 1] [--limit 2]
     python -m app.cli crawl   --site jumpit --pages 2 [--no-detail]
+                              [--skip-seen-days 7] [--force-reextract]
+    python -m app.cli embed   [--limit 500] [--fake] [--companies]
+    python -m app.cli vector-index --build | --drop
 
 inspect 는 DB 를 건드리지 않는다. 실제 응답을 data/raw/ 에 저장하고
 파서가 뽑아낸 값을 사람이 눈으로 확인하는 용도다.
+
+embed 는 arq 없이 임베딩 파이프라인만 돌린다 (태스크와 같은 서비스 함수를
+부른다). 워커를 띄우지 않고 결과를 확인할 때 쓴다.
 """
 
 from __future__ import annotations
@@ -14,8 +20,18 @@ import asyncio
 import json
 import logging
 import sys
+import time
 
-from app.core.database import dispose_engines, ensure_selector_event_loop_policy, session_scope
+from sqlalchemy import text as sa_text
+
+from app.core.database import (
+    dispose_engines,
+    ensure_selector_event_loop_policy,
+    get_sessionmaker,
+    session_scope,
+)
+from app.domains.crawler import embed_service
+from app.domains.crawler.config import DEFAULT_SKIP_SEEN_DAYS
 from app.domains.crawler.service import (
     CrawlService,
     rebuild_bodies_from_snapshots,
@@ -26,7 +42,8 @@ from app.domains.crawler.sites.jobkorea import JobkoreaCrawler
 from app.domains.crawler.sites.jumpit import JumpitCrawler
 from app.domains.crawler.sites.saramin import SaraminCrawler
 from app.domains.crawler.sites.wanted import WantedCrawler
-from app.domains.market import repository
+from app.domains.market import repository, vector_index
+from app.llm.embed_adapter import build_embedder
 
 log = logging.getLogger(__name__)
 
@@ -119,16 +136,25 @@ async def cmd_inspect(args: argparse.Namespace) -> int:
 
 # ── crawl ───────────────────────────────────────────────────────────────────
 async def cmd_crawl(args: argparse.Namespace) -> int:
-    async with _build_crawler(args.site, getattr(args, "keyword", None)) as crawler:
-        service = CrawlService(crawler)
+    started = time.monotonic()
+    keyword = getattr(args, "keyword", None)
+    async with _build_crawler(args.site, keyword) as crawler:
+        service = CrawlService(crawler, force_reextract=args.force_reextract)
         stats = await service.crawl(
-            pages=args.pages, with_detail=not args.no_detail, start_page=args.start_page
+            pages=args.pages,
+            with_detail=not args.no_detail,
+            start_page=args.start_page,
+            skip_seen_days=args.skip_seen_days,
+            keyword=keyword,
         )
+    elapsed = time.monotonic() - started
 
     print(f"\n=== {args.site} 수집 완료 ===")
     print(f"  페이지        : {stats.pages}/{args.pages}")
     print(f"  사이트 총 건수 : {stats.total_available}")
     print(f"  {stats.as_line()}")
+    print(f"  요청 수        : {crawler.request_count}")
+    print(f"  소요           : {elapsed:.1f}초")
     if stats.error_messages:
         print("  오류:")
         for msg in stats.error_messages[:5]:
@@ -136,6 +162,83 @@ async def cmd_crawl(args: argparse.Namespace) -> int:
 
     await dispose_engines()
     return 0 if stats.fetched else 1
+
+
+# ── embed ───────────────────────────────────────────────────────────────────
+async def cmd_embed(args: argparse.Namespace) -> int:
+    """arq 없이 임베딩만 돌린다. 태스크와 같은 서비스 함수를 부른다."""
+    embedder = build_embedder(force_fake=args.fake)
+    factory = get_sessionmaker()
+    started = time.monotonic()
+
+    print(f"\n=== 임베딩 시작 (embedder={type(embedder).__name__}) ===")
+
+    if args.companies:
+        stats = await embed_service.embed_companies(factory, embedder, limit=args.limit)
+    else:
+        ids = [int(v) for v in args.ids] if args.ids else None
+        stats = await embed_service.embed_postings(
+            factory, embedder, posting_ids=ids, limit=None if ids else args.limit
+        )
+
+    print(f"  {stats.as_line()}")
+    print(f"  기업          : {stats.companies}")
+    print(f"  소요          : {time.monotonic() - started:.1f}초")
+    if stats.error_messages:
+        print("  오류:")
+        for msg in stats.error_messages[:5]:
+            print(f"    - {msg}")
+
+    async with session_scope() as session:
+        remaining = await repository.count_postings_to_embed(session)
+        by_section = await repository.count_chunks_by_section(session)
+
+    print(f"\n  남은 대상     : {remaining}건")
+    print("  섹션별 청크   :")
+    for section, count in by_section:
+        print(f"    {section:<16} {count}")
+
+    await dispose_engines()
+    return 0 if stats.errors == 0 else 1
+
+
+# ── vector-index ────────────────────────────────────────────────────────────
+async def cmd_vector_index(args: argparse.Namespace) -> int:
+    """HNSW 인덱스를 데이터 적재 뒤에 만든다.
+
+    빈 테이블에 인덱스를 먼저 걸면 INSERT 마다 그래프를 갱신하느라 초기
+    적재가 몇 배 느려진다. 마이그레이션은 인덱스 없이 스키마만 만들고,
+    적재가 끝난 뒤 이 명령으로 세운다.
+    """
+    action = "DROP" if args.drop else "BUILD"
+    print(f"\n=== HNSW 인덱스 {action} ===")
+
+    async with session_scope() as session:
+        if not args.drop:
+            # 병렬 빌드는 도커 기본 /dev/shm(64MB)에서 터진다. 직렬로 짓는다.
+            for setup in vector_index.BUILD_SESSION_SETUP:
+                await session.exec(sa_text(setup))
+
+        for name, ddl in vector_index.INDEXES:
+            if args.drop:
+                print(f"  drop {name} …")
+                await session.exec(sa_text(f"DROP INDEX IF EXISTS market.{name}"))
+                continue
+            print(f"  create {name} … (데이터가 많으면 수 분 걸린다)")
+            await session.exec(sa_text(ddl))
+
+        rows = (
+            await session.exec(
+                sa_text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname='market' AND indexdef ILIKE '%hnsw%' ORDER BY 1"
+                )
+            )
+        ).all()
+
+    print(f"\n  현재 HNSW 인덱스: {[r[0] for r in rows] or '(없음)'}")
+    await dispose_engines()
+    return 0
 
 
 # ── reparse ─────────────────────────────────────────────────────────────────
@@ -217,7 +320,29 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("--no-detail", action="store_true", help="목록만 수집 (상세 생략)")
     p_crawl.add_argument("--keyword", help="검색 키워드 (사람인·잡코리아)")
     p_crawl.add_argument("--start-page", type=int, default=1, help="이어서 수집할 시작 페이지")
+    p_crawl.add_argument(
+        "--skip-seen-days",
+        type=int,
+        default=DEFAULT_SKIP_SEEN_DAYS,
+        help="최근 N일 내 수집한 공고는 목록에서 걸러 상세를 받지 않는다 (0=끄기)",
+    )
+    p_crawl.add_argument(
+        "--force-reextract",
+        action="store_true",
+        help="content_hash 가 같아도 다시 적재한다 (파서 수정 후 백필용)",
+    )
     p_crawl.set_defaults(func=cmd_crawl)
+
+    p_embed = sub.add_parser("embed", help="임베딩 실행 (arq 없이)")
+    p_embed.add_argument("--limit", type=int, help="상위 N건만 (생략 시 전량)")
+    p_embed.add_argument("--ids", nargs="+", help="특정 posting_id 만")
+    p_embed.add_argument("--companies", action="store_true", help="기업 프로필 임베딩")
+    p_embed.add_argument("--fake", action="store_true", help="FakeEmbedder 사용 (API 키 불필요)")
+    p_embed.set_defaults(func=cmd_embed)
+
+    p_index = sub.add_parser("vector-index", help="HNSW 인덱스 생성/삭제 (적재 후 실행)")
+    p_index.add_argument("--drop", action="store_true", help="생성 대신 삭제")
+    p_index.set_defaults(func=cmd_vector_index)
 
     p_reparse = sub.add_parser("reparse", help="저장된 본문으로 스택만 다시 추출 (재수집 없음)")
     # 비활성 사이트도 스냅샷 재파싱 대상으로는 허용한다.

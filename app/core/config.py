@@ -65,7 +65,26 @@ class Settings(BaseSettings):
     embed_dim: int = EMBEDDING_DIM
     embed_batch_size: int = 96
     embed_max_retry: int = 3
-    embed_backfill_limit: int = 500
+    embed_backfill_limit: int = 100
+    # crawl_site 가 embed_postings 를 enqueue 할 때 한 job 에 넣는 공고 수.
+    # 0 이면 쪼개지 않고 한 번에 넘긴다.
+    embed_enqueue_chunk: int = 40
+    # 계정 레이트리밋. 0 이면 클라이언트에서 제한하지 않는다.
+    # Voyage 무료 등급은 3 RPM · 10K TPM 이라 96개 배치가 그대로 튕긴다.
+    # 결제수단을 등록하면 표준 등급으로 올라가므로 그때 0 으로 되돌린다.
+    embed_rpm: int = 0
+    embed_tpm: int = 0
+
+    # ── 배치 크기 되돌리기 ──────────────────────────────────────────────────
+    # 무료 등급(3 RPM · 10K TPM)에서는 분당 12건쯤 처리된다. 그 속도로는
+    # 500건 백필이 job_timeout=600 안에 못 끝나 태스크가 통째로 잘린다.
+    # 그래서 백필 100건 · enqueue 40건으로 낮춰 뒀다.
+    #
+    # 표준 등급으로 올린 뒤에는 .env 에서 이렇게 되돌린다.
+    #     EMBED_RPM=0
+    #     EMBED_TPM=0
+    #     EMBED_BACKFILL_LIMIT=500
+    #     EMBED_ENQUEUE_CHUNK=0
 
     # ── chat guard ──────────────────────────────────────────────────────────
     chat_recursion_limit: int = 8

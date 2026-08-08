@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import and_, delete, func, or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -25,6 +25,7 @@ from app.domains.market.models import (
     CompanySource,
     CrawlRun,
     JobPosting,
+    PostingChunk,
     PostingSkill,
     Skill,
     SkillAlias,
@@ -34,6 +35,13 @@ from app.domains.market.models import (
 from app.domains.market.schemas import SkillDictionaryRow, UnmatchedTag
 
 # 상세 실패 시 기존 값을 유지해야 하는 컬럼
+#
+# ★ INSERT 에 넣는 컬럼은 여기나 upsert_posting 의 set_ 둘 중 하나에 반드시
+#   있어야 한다. 어느 쪽에도 없으면 ON CONFLICT 에서 조용히 빠져 **기존 행은
+#   영원히 갱신되지 않는다** — 새로 들어온 공고만 값이 차고, 이미 있는 공고는
+#   재수집을 몇 번 해도 옛날 값 그대로다.
+#   employment_type · salary_period · body_extract_failed 셋이 실제로 이
+#   구멍에 빠져 있었다. tests/test_upsert_columns.py 가 이 규칙을 강제한다.
 _COALESCE_ON_UPDATE = (
     "description",
     "welfare",
@@ -42,6 +50,10 @@ _COALESCE_ON_UPDATE = (
     "salary_max",
     "location",
     "education",
+    # 상세(view-ajax)를 못 받으면 None 으로 온다. 알아낸 값을 지우지 않는다.
+    "employment_type",
+    # salary_min/max 와 짝이다. 금액만 남고 기준이 사라지면 통계가 왜곡된다.
+    "salary_period",
     "posted_at",
     "expires_at",
     "company_id",
@@ -424,6 +436,28 @@ async def get_content_hashes(
     return {sjid: h for sjid, h in rows}
 
 
+async def recent_source_ids(session: AsyncSession, source: str, *, days: int) -> set[str]:
+    """최근 days 일 안에 수집한 source_job_id 집합. ★ 증분 수집의 핵심.
+
+    목록 단계에서 이 집합으로 거른다. 상세를 받아 온 뒤 content_hash 를
+    비교하면 요청은 이미 나가 있어 절감 효과가 0이다.
+
+    days=0 이면 필터를 끈다(빈 집합) — 전량 재수집.
+    """
+    if days <= 0:
+        return set()
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id).where(
+                JobPosting.source == source,
+                JobPosting.collected_at >= cutoff,
+            )
+        )
+    ).all()
+    return {row if isinstance(row, str) else row[0] for row in rows}
+
+
 async def touch_posting(session: AsyncSession, source: str, source_job_id: str) -> None:
     """내용이 그대로일 때. collected_at 만 갱신하고 재추출은 생략한다."""
     await session.exec(
@@ -433,11 +467,13 @@ async def touch_posting(session: AsyncSession, source: str, source_job_id: str) 
     )
 
 
-async def upsert_posting(session: AsyncSession, values: dict[str, Any]) -> int:
-    """(source, source_job_id) 기준 upsert. 공고 id 를 돌려준다."""
-    stmt = pg_insert(JobPosting).values(**values)
-    excluded = stmt.excluded
+def _conflict_update_set(excluded: Any) -> dict[str, Any]:
+    """ON CONFLICT DO UPDATE 의 갱신 목록.
 
+    upsert_posting 에서 분리해 둔 이유는 테스트가 이 결과와 service 가 INSERT
+    하는 컬럼을 대조하기 위해서다 (tests/test_upsert_columns.py).
+    여기 없는 컬럼은 **기존 행에 영원히 반영되지 않는다**.
+    """
     set_: dict[str, Any] = {
         "title": excluded.title,
         "company_name_raw": excluded.company_name_raw,
@@ -445,19 +481,236 @@ async def upsert_posting(session: AsyncSession, values: dict[str, Any]) -> int:
         "career_min": excluded.career_min,
         "career_max": excluded.career_max,
         "salary_type": excluded.salary_type,
+        # 이 둘은 매 파싱의 판정 결과다. COALESCE 하면 한 번 true 가 된 공고가
+        # 파서를 고친 뒤에도 영원히 true 로 남는다 — 최신 판정으로 덮어쓴다.
         "body_is_image": excluded.body_is_image,
+        "body_extract_failed": excluded.body_extract_failed,
         "content_hash": excluded.content_hash,
         "collected_at": excluded.collected_at,
         "raw_fields": excluded.raw_fields,
     }
     for column in _COALESCE_ON_UPDATE:
         set_[column] = func.coalesce(getattr(excluded, column), getattr(JobPosting, column))
+    return set_
 
-    stmt = stmt.on_conflict_do_update(constraint="job_posting_uk", set_=set_).returning(
-        JobPosting.id
-    )
+
+async def upsert_posting(session: AsyncSession, values: dict[str, Any]) -> int:
+    """(source, source_job_id) 기준 upsert. 공고 id 를 돌려준다."""
+    stmt = pg_insert(JobPosting).values(**values)
+
+    stmt = stmt.on_conflict_do_update(
+        constraint="job_posting_uk", set_=_conflict_update_set(stmt.excluded)
+    ).returning(JobPosting.id)
     posting_id = (await session.exec(stmt)).one()
     return posting_id if isinstance(posting_id, int) else posting_id[0]
+
+
+# ── 임베딩 ──────────────────────────────────────────────────────────────────
+# 임베딩 대상에서 빼는 조건. 세 곳(지정 대상 · 백필 · 카운트)에서 같은 조건을
+# 써야 해서 한 곳에 모아 둔다. 조건이 갈라지면 백필이 영원히 같은 행을 집는다.
+def _embeddable_posting_clause() -> Any:
+    return and_(
+        JobPosting.description.is_not(None),
+        JobPosting.body_is_image.is_(False),
+        JobPosting.body_extract_failed.is_(False),
+    )
+
+
+def _needs_embedding_clause() -> Any:
+    """embed_hash 가 content_hash 와 다른 것 = 아직 임베딩이 최신이 아니다."""
+    return or_(
+        JobPosting.embed_hash.is_(None),
+        JobPosting.embed_hash.is_distinct_from(JobPosting.content_hash),
+    )
+
+
+async def iter_postings_to_embed(
+    session: AsyncSession,
+    *,
+    posting_ids: Sequence[int] | None = None,
+    limit: int | None = None,
+) -> list[tuple[int, str, str]]:
+    """임베딩 대상. (posting_id, description, content_hash)
+
+    posting_ids 를 줘도 embed_hash 조건은 그대로 건다. 태스크가 재시도되어
+    같은 id 로 다시 들어와도 이미 끝난 공고는 걸러지므로 멱등해진다.
+    """
+    stmt = (
+        select(JobPosting.id, JobPosting.description, JobPosting.content_hash)
+        .where(_embeddable_posting_clause(), _needs_embedding_clause())
+        .order_by(JobPosting.id)
+    )
+    if posting_ids is not None:
+        if not posting_ids:
+            return []
+        stmt = stmt.where(JobPosting.id.in_(list(posting_ids)))
+    if limit:
+        stmt = stmt.limit(limit)
+
+    return [
+        (pid, description, content_hash)
+        for pid, description, content_hash in (await session.exec(stmt)).all()
+        if description and content_hash
+    ]
+
+
+async def count_postings_to_embed(session: AsyncSession) -> int:
+    """백필이 남긴 잔량. 완료 확인용."""
+    stmt = (
+        select(func.count())
+        .select_from(JobPosting)
+        .where(_embeddable_posting_clause(), _needs_embedding_clause())
+    )
+    row = (await session.exec(stmt)).one()
+    return int(row if isinstance(row, int) else row[0])
+
+
+async def get_chunk_state(session: AsyncSession, posting_id: int) -> dict[tuple[str, int], str]:
+    """이 공고의 기존 청크 상태. (section, seq) → chunk_hash
+
+    벡터가 비어 있는 행은 '해시가 없는 것' 으로 취급해 재임베딩 대상이 된다.
+    (이전 실행이 청크만 쓰고 죽은 경우)
+    """
+    rows = (
+        await session.exec(
+            select(
+                PostingChunk.section,
+                PostingChunk.seq,
+                PostingChunk.chunk_hash,
+                PostingChunk.embedding.is_(None).label("no_vector"),
+            ).where(PostingChunk.posting_id == posting_id)
+        )
+    ).all()
+    return {
+        (str(section), seq): ("" if no_vector else chunk_hash)
+        for section, seq, chunk_hash, no_vector in rows
+    }
+
+
+async def upsert_posting_chunk(
+    session: AsyncSession,
+    *,
+    posting_id: int,
+    section: str,
+    seq: int,
+    content: str,
+    chunk_hash: str,
+    embedding: Sequence[float],
+    token_count: int | None = None,
+) -> None:
+    """청크 1건. (posting_id, section, seq) 기준 upsert."""
+    stmt = pg_insert(PostingChunk).values(
+        posting_id=posting_id,
+        section=section,
+        seq=seq,
+        content=content,
+        chunk_hash=chunk_hash,
+        embedding=list(embedding),
+        token_count=token_count,
+    )
+    await session.exec(
+        stmt.on_conflict_do_update(
+            constraint="posting_chunk_uk",
+            set_={
+                "content": stmt.excluded.content,
+                "chunk_hash": stmt.excluded.chunk_hash,
+                "embedding": stmt.excluded.embedding,
+                "token_count": stmt.excluded.token_count,
+            },
+        )
+    )
+
+
+async def delete_stale_chunks(
+    session: AsyncSession, posting_id: int, keep: Sequence[tuple[str, int]]
+) -> int:
+    """이번 분할 결과에 없는 청크를 지운다.
+
+    본문이 짧아지면 seq 가 줄어든다. 안 지우면 예전 벡터가 검색에 계속
+    걸린다 — 원문에는 이미 없는 문장이 근거로 인용되는 사고가 난다.
+    """
+    stmt = delete(PostingChunk).where(PostingChunk.posting_id == posting_id)
+    if keep:
+        stmt = stmt.where(
+            tuple_(PostingChunk.section, PostingChunk.seq).not_in([(s, q) for s, q in keep])
+        )
+    return int((await session.exec(stmt)).rowcount or 0)
+
+
+async def set_posting_embed_hash(session: AsyncSession, posting_id: int, embed_hash: str) -> None:
+    """★ 임베딩이 전부 성공한 뒤에만 부른다.
+
+    중간에 실패했는데 갱신하면 그 공고는 영원히 백필 대상에서 빠진다.
+    """
+    await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.id == posting_id)
+        .values(embed_hash=embed_hash)
+    )
+
+
+async def iter_companies_to_embed(
+    session: AsyncSession,
+    *,
+    company_ids: Sequence[int] | None = None,
+    limit: int | None = None,
+) -> list[tuple[int, str | None, str | None, str | None, str | None]]:
+    """기업 프로필 임베딩 대상.
+
+    (id, description, business_content, industry, embed_hash)
+    세 필드가 전부 비어 있는 기업은 SQL 단계에서 제외한다 — 합쳐도 빈
+    문자열이라 임베딩할 게 없다.
+    """
+    stmt = (
+        select(
+            Company.id,
+            Company.description,
+            Company.business_content,
+            Company.industry,
+            Company.embed_hash,
+        )
+        .where(
+            or_(
+                Company.description.is_not(None),
+                Company.business_content.is_not(None),
+                Company.industry.is_not(None),
+            )
+        )
+        .order_by(Company.id)
+    )
+    if company_ids is not None:
+        if not company_ids:
+            return []
+        stmt = stmt.where(Company.id.in_(list(company_ids)))
+    if limit:
+        stmt = stmt.limit(limit)
+    return list((await session.exec(stmt)).all())
+
+
+async def set_company_embedding(
+    session: AsyncSession,
+    company_id: int,
+    *,
+    embedding: Sequence[float],
+    embed_hash: str,
+) -> None:
+    await session.exec(
+        Company.__table__.update()
+        .where(Company.id == company_id)
+        .values(profile_embedding=list(embedding), embed_hash=embed_hash)
+    )
+
+
+async def count_chunks_by_section(session: AsyncSession) -> list[tuple[str, int]]:
+    """검증 쿼리용. SELECT section, COUNT(*) ... GROUP BY 1 과 같다."""
+    rows = (
+        await session.exec(
+            select(PostingChunk.section, func.count())
+            .group_by(PostingChunk.section)
+            .order_by(PostingChunk.section)
+        )
+    ).all()
+    return [(str(section), int(count)) for section, count in rows]
 
 
 # ── 실행 이력 ───────────────────────────────────────────────────────────────
@@ -474,6 +727,33 @@ async def start_run(
     return run.id
 
 
+async def fail_stale_runs(session: AsyncSession, *, older_than_seconds: int) -> int:
+    """죽은 태스크가 남긴 running 행을 failed 로 마감한다. 마감한 건수를 돌려준다.
+
+    워커가 SIGKILL 되거나 컨테이너가 재시작되면 finish_run 이 불리지 못해
+    crawl_run 이 영원히 running 으로 남는다. 그러면 "어제 수집이 아직 도는
+    중인가?" 를 이력만 보고 판단할 수 없다.
+
+    ★ 기준을 job_timeout 보다 길게 잡는다. 그 시간을 넘겨 살아 있는 태스크는
+      존재할 수 없으므로(arq 가 먼저 죽인다), 워커가 여러 개여도 남의 실행을
+      잘못 마감할 위험이 없다.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
+    result = await session.exec(
+        CrawlRun.__table__.update()
+        .where(
+            CrawlRun.status == enums.RunStatus.RUNNING.value,
+            CrawlRun.started_at < cutoff,
+        )
+        .values(
+            status=enums.RunStatus.FAILED.value,
+            finished_at=datetime.now(UTC),
+            message="워커가 중단되어 마감되지 못한 실행 (기동 시 정리)",
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 async def finish_run(
     session: AsyncSession,
     run_id: int,
@@ -483,6 +763,7 @@ async def finish_run(
     inserted: int = 0,
     updated: int = 0,
     skipped: int = 0,
+    embedded: int = 0,
     errors: int = 0,
     message: str | None = None,
 ) -> None:
@@ -495,6 +776,7 @@ async def finish_run(
             inserted=inserted,
             updated=updated,
             skipped=skipped,
+            embedded=embedded,
             errors=errors,
             message=message,
             finished_at=datetime.now(UTC),

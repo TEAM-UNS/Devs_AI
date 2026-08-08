@@ -56,6 +56,21 @@ class ParseError(CrawlError):
     """응답 구조가 예상과 다름. 사이트 개편 신호."""
 
 
+class SelectorBrokenError(ParseError):
+    """1페이지에서 0건. ★ 반드시 실패로 마감한다 (명세 3-3).
+
+    "검색 결과가 없다" 와 "셀렉터가 깨졌다" 는 구분해야 한다. 1페이지가
+    비는 것은 후자다. 조용히 break 하면 매일 0건을 수집하면서 crawl_run 은
+    success 로 남아 정상처럼 보인다.
+    """
+
+    def __init__(self, source: str, keyword: str | None = None) -> None:
+        target = f"{source}({keyword})" if keyword else source
+        super().__init__(f"{target}: 1페이지 0건 — 목록 셀렉터/엔드포인트가 깨졌습니다.")
+        self.source = source
+        self.keyword = keyword
+
+
 class BaseSiteCrawler(abc.ABC):
     """사이트 어댑터 베이스. `async with` 로 쓴다."""
 
