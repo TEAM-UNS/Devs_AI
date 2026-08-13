@@ -59,7 +59,7 @@ SITES: dict[str, type[BaseSiteCrawler]] = {
     #   스냅샷 103건 보존 (data/raw/jobkorea/). 엔드포인트를 찾으면 되살린다.
     #   sites/jobkorea.py 와 fixture·테스트는 그대로 유지한다.
 }
-# 키워드 검색이 필요한 사이트 (점핏·원티드는 직군 목록을 그대로 돈다)
+# 키워드 검색이 필요한 사이트
 KEYWORD_SITES = {"saramin", "jobkorea"}
 
 # 비활성 사이트도 스냅샷 재파싱·테스트에는 쓸 수 있게 남겨둔다.
