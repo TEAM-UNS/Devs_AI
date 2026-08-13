@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     use_fake_llm: bool = False
 
     # ── embedding ───────────────────────────────────────────────────────────
+    # 어느 어댑터를 쓸지. build_embedder() 가 이 값 하나로 분기한다.
+    #     auto   기존 동작 — 키가 있으면 voyage, 없으면 fake
+    #     local  BGE-m3 로컬 (uv sync --extra local 필요)
+    #     voyage 임베딩 API
+    #     fake   해시 기반 더미 벡터
+    #
+    # ★ local 과 voyage 의 벡터는 호환되지 않는다. 차원이 둘 다 1024 라
+    #   INSERT 는 통과하는데 코사인 유사도만 조용히 깨진다. 제공자를 바꾸면
+    #   posting_chunk.embedding 을 전량 재생성해야 한다.
+    embed_provider: Literal["auto", "local", "voyage", "fake"] = "auto"
+
     voyage_api_key: str = ""
     embed_model: str = "voyage-3-large"
     embed_dim: int = EMBEDDING_DIM
@@ -74,6 +85,20 @@ class Settings(BaseSettings):
     # 결제수단을 등록하면 표준 등급으로 올라가므로 그때 0 으로 되돌린다.
     embed_rpm: int = 0
     embed_tpm: int = 0
+
+    # ── embedding (local / BGE-m3) ──────────────────────────────────────────
+    # EMBED_PROVIDER=local 일 때만 쓰인다. 레이트리밋 설정(EMBED_RPM/TPM)은
+    # 로컬에 해당이 없어 무시된다.
+    embed_local_model: str = "BAAI/bge-m3"
+    # 빈 문자열이면 자동 감지 (cuda → mps → cpu).
+    embed_local_device: str = ""
+    # 배치 크기를 API 쪽(EMBED_BATCH_SIZE=96)과 나눠 둔 이유:
+    # 96 은 네트워크 왕복을 줄이려는 값이고, 로컬 GPU 에서는 32 가 최적이다.
+    # M5 Pro 실측 — 32: 92.0청크/초 · 64: 78.6 · 96: 63.4
+    embed_local_batch_size: int = 32
+    # GPU(cuda/mps)에서만 적용된다. fp32 대비 3.1배 빠르고 벡터는 사실상 같다
+    # (코사인 최소 0.99976). CPU 에서는 가속되지 않아 무시한다.
+    embed_local_fp16: bool = True
 
     # ── 배치 크기 되돌리기 ──────────────────────────────────────────────────
     # 무료 등급(3 RPM · 10K TPM)에서는 분당 12건쯤 처리된다. 그 속도로는

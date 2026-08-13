@@ -317,18 +317,46 @@ class VoyageEmbedder:
 
 
 def build_embedder(*, force_fake: bool = False) -> EmbedderPort:
-    """설정에 따라 실제 어댑터 / Fake 를 고른다.
+    """설정에 따라 어댑터를 고른다.
 
     ★ 여기가 유일한 분기점이다. 태스크·툴은 EmbedderPort 만 보고 쓴다.
 
+    EMBED_PROVIDER
+        auto    기존 동작 — 키가 있으면 voyage, 없으면 fake (기본값)
+        local   BGE-m3 로컬 (uv sync --extra local)
+        voyage  임베딩 API
+        fake    해시 기반 더미 벡터
+
     USE_FAKE_LLM 은 보지 않는다. 저건 챗봇 LLM 스위치다. 임베딩까지 같이
     묶으면 "챗봇은 Fake 로 두고 임베딩만 실제로 한 번 돌린다" 를 못 한다.
-    임베딩은 키 유무로 판단하고, 강제하고 싶으면 force_fake 를 쓴다.
+    임베딩은 EMBED_PROVIDER 로 판단하고, 강제하고 싶으면 force_fake 를 쓴다.
+
+    ★ 제공자를 바꾸면 기존 벡터는 못 쓴다. local 과 voyage 는 차원이 둘 다
+      1024 라 INSERT 는 통과하지만 벡터 공간이 서로 달라 코사인 유사도가
+      조용히 깨진다. 바꿨다면 posting_chunk.embedding 을 전량 재생성할 것.
     """
-    from app.llm.fake import FakeEmbedder  # port 만 알면 되게 지연 import
+    # port 만 알면 되게 지연 import 한다. 특히 local 은 torch 를 끌고 와서
+    # 무겁다 — 안 쓰는 환경에서 import 비용을 물지 않게 한다.
+    from app.llm.fake import FakeEmbedder
 
     settings = get_settings()
-    if force_fake or not settings.voyage_api_key:
+    provider = settings.embed_provider
+
+    if force_fake or provider == "fake":
         log.warning("FakeEmbedder 를 사용합니다 (force_fake=%s).", force_fake)
+        return FakeEmbedder(dim=settings.embed_dim)
+
+    if provider == "local":
+        from app.llm.local_embed_adapter import LocalEmbedder
+
+        log.info("LocalEmbedder 를 사용합니다 (model=%s).", settings.embed_local_model)
+        return LocalEmbedder()
+
+    if provider == "voyage":
+        return VoyageEmbedder()
+
+    # auto — 키 유무로 판단한다. EMBED_PROVIDER 를 도입하기 전의 동작 그대로다.
+    if not settings.voyage_api_key:
+        log.warning("VOYAGE_API_KEY 가 없어 FakeEmbedder 를 사용합니다.")
         return FakeEmbedder(dim=settings.embed_dim)
     return VoyageEmbedder()

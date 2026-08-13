@@ -109,6 +109,100 @@ python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 \
 crawl_dispatch: 0건 enqueue (중복 차단 10)
 ```
 
+### 임베딩 제공자 — 로컬 / API 갈아끼우기
+
+**기본은 임베딩 API(voyage)다.** 로컬(BGE-m3)은 호스트에서 쓰는 선택지이고
+컨테이너에는 넣지 않는다 — 아래 "로컬 임베딩은 호스트에서만" 참고.
+
+`EMBED_PROVIDER` 하나로 바뀐다. 분기는 `build_embedder()` 한 곳에만 있고,
+태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다.
+
+| 값 | 어댑터 | 비고 |
+|---|---|---|
+| `auto` | 키 있으면 Voyage, 없으면 Fake | 기본값. 도입 전 동작 그대로 |
+| `local` | `LocalEmbedder` (BGE-m3) | `uv sync --group local` 필요 |
+| `voyage` | `VoyageEmbedder` | 키 필수 |
+| `fake` | `FakeEmbedder` | 해시 기반 더미 벡터 |
+
+```bash
+uv sync --group local                  # torch + sentence-transformers (수 GB)
+EMBED_PROVIDER=local uv run python -m app.cli embed
+```
+
+첫 실행은 모델 가중치 약 2.3GB 를 받는다(`~/.cache/huggingface`). 이후
+기동마다 로드에 약 6초가 들고, 프로세스당 1회만 올린다.
+
+**실측 (M5 Pro · 48GB / 청크 192개 / 길이 150~1200자)**
+
+| 구성 | 배치 | 청크/초 | 공고/분 |
+|---|---:|---:|---:|
+| 호스트 MPS fp16 | 32 | 92.0 | 1,903 |
+| 호스트 MPS fp32 | 16 | 28.3 | 585 |
+| 호스트 CPU fp32 | 16 | 6.6 | 137 |
+| **컨테이너 CPU fp32** | 16 | 3.4 | **71** |
+| Voyage 무료 등급 | — | — | 12 |
+
+컨테이너가 호스트 CPU 의 절반인 것은 Docker Desktop VM 오버헤드다.
+**CPU 에서는 배치 16 이 최적이다** — 같은 코퍼스로 16: 3.4 · 32: 3.1 · 64: 2.5.
+기본값 `EMBED_LOCAL_BATCH_SIZE=32` 는 GPU 기준이므로, CPU 로 돌릴 일이 있으면
+16 으로 낮춘다.
+
+fp16 은 fp32 대비 3.1배 빠르고 벡터는 사실상 같다 — 같은 청크 코사인 최소
+0.99976, top-5 이웃 일치율 96.2%. GPU(cuda/mps)에서만 켜진다. CPU 에서는
+half 연산이 가속되지 않아 무시된다.
+
+`EMBED_BATCH_SIZE`(96)는 **로컬에 적용되지 않는다.** 저 값은 네트워크 왕복을
+줄이려는 것이고 로컬 GPU 에서는 오히려 31% 느리다(96: 63.4 청크/초). 로컬은
+`EMBED_LOCAL_BATCH_SIZE`(기본 32)를 따로 본다. `EMBED_RPM`/`EMBED_TPM` 도
+로컬에는 해당이 없어 무시된다.
+
+**★ 제공자를 바꾸면 기존 벡터는 못 쓴다.** BGE-m3 와 voyage-3 는 차원이 둘 다
+1024 라 INSERT 는 멀쩡히 통과하는데 벡터 공간이 서로 달라 코사인 유사도만
+조용히 깨진다. 에러가 안 나서 알아채기 어렵다. 바꿨으면 전량 재생성할 것:
+
+```sql
+UPDATE market.job_posting SET embed_hash = NULL;
+DELETE FROM market.posting_chunk;
+```
+
+```bash
+EMBED_PROVIDER=local uv run python -m app.cli embed
+```
+
+#### ★ 로컬 임베딩은 호스트에서만 쓴다 — 컨테이너에 넣지 말 것
+
+**맥의 Docker 는 GPU(MPS)를 통과시키지 않는다.** Apple 의 Metal 을 리눅스 VM
+으로 넘기는 경로가 없어서, `--gpus` 같은 옵션 자체가 존재하지 않는다.
+컨테이너 안에서 `torch` 는 항상 `device=cpu` 다.
+
+실제로 워커 이미지에 넣어 봤고, 결론은 "넣지 않는다" 였다:
+
+| | 이미지 | 청크/초 | CPU 사용 |
+|---|---:|---:|---|
+| 호스트 (MPS fp16) | — | **90.7** | 코어 0.1개 (1%) |
+| 컨테이너 (CPU fp32) | 3.6GB | 3.4 | 15코어 전부 |
+| 컨테이너 (API, 현재) | 1.1GB | — | 없음 |
+
+CPU 를 다 태우면서 27배 느리다. 스레드를 묶어도 나아지지 않는다 —
+4스레드 1.9 청크/초 · 8스레드 2.9 청크/초로 속도만 같이 떨어진다.
+
+그래서 `Dockerfile` 은 `--group local` 없이 굽고(1.1GB), 워커는 임베딩 API 를
+쓴다. 로컬 임베딩이 필요하면 워커를 호스트에서 돌린다:
+
+```bash
+docker compose stop worker
+EMBED_PROVIDER=local uv run arq app.worker.WorkerSettings
+```
+
+> 리눅스 + NVIDIA 서버라면 이야기가 다르다. 거기서는 nvidia-container-toolkit
+> 으로 컨테이너가 GPU 를 쓸 수 있다. 못 쓰는 건 **맥의 Docker** 다.
+>
+> 굳이 컨테이너에 넣는다면 `pyproject.toml` 의 `[tool.uv.sources]` 가 linux 용
+> torch 를 CPU 전용 빌드로 받게 해 둔 것이 필요하다. 기본 PyPI 판은 CUDA
+> 런타임을 끌고 와서 이미지가 17.1GB 가 된다(`nvidia/` 2.9GB + `triton/` 652MB
+> 가 전부 죽은 무게). 그래서 `local` 그룹에 `torch` 가 **직접** 적혀 있다 —
+> uv 의 source 재정의는 직접 의존성에만 적용되고 전이 의존성은 건너뛴다.
+
 ### 임베딩 레이트리밋
 
 Voyage 계정에 결제수단이 없으면 **3 RPM · 10K TPM** 으로 묶인다. 명세의
