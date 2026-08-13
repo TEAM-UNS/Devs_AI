@@ -32,6 +32,7 @@ dependencies = [
     "lxml>=5.3",
     "tenacity>=9.0",
     "pyyaml>=6.0",
+    "ollama>=0.6.2",
 ]
 
 [dependency-groups]
