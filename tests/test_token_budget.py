@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from app.llm.embed_adapter import (
+from app.llm.gemini_embed_adapter import (
     TOKEN_SAFETY,
     TOKENS_PER_CHAR,
     TOKENS_PER_CHAR_FLOOR,

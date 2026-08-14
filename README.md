@@ -109,120 +109,102 @@ python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 \
 crawl_dispatch: 0건 enqueue (중복 차단 10)
 ```
 
-### 임베딩 제공자 — 로컬 / API 갈아끼우기
+### 임베딩
 
-**기본은 임베딩 API(voyage)다.** 로컬(BGE-m3)은 호스트에서 쓰는 선택지이고
-컨테이너에는 넣지 않는다 — 아래 "로컬 임베딩은 호스트에서만" 참고.
+`gemini-embedding-2` · 1024차원 · 코사인. 키는 `GOOGLE_API_KEY` 로 챗봇과 공용이다.
 
-`EMBED_PROVIDER` 하나로 바뀐다. 분기는 `build_embedder()` 한 곳에만 있고,
+`EMBED_PROVIDER` 로 더미와 갈아끼운다. 분기는 `build_embedder()` 한 곳에만 있고,
 태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다.
 
-| 값 | 어댑터 | 비고 |
+| 값 | 구현 | 비고 |
 |---|---|---|
-| `auto` | 키 있으면 Voyage, 없으면 Fake | 기본값. 도입 전 동작 그대로 |
-| `local` | `LocalEmbedder` (BGE-m3) | `uv sync --group local` 필요 |
-| `voyage` | `VoyageEmbedder` | 키 필수 |
-| `fake` | `FakeEmbedder` | 해시 기반 더미 벡터 |
+| `auto` | 키 있으면 Gemini, 없으면 Fake | 기본값 |
+| `gemini` | `GeminiEmbedder` | 키 필수. 없으면 기동 시 터진다 |
+| `fake` | `FakeEmbedder` | 해시 기반 더미 벡터. 키 불필요 |
 
-```bash
-uv sync --group local                  # torch + sentence-transformers (수 GB)
-EMBED_PROVIDER=local uv run python -m app.cli embed
-```
+`gemini` 를 **명시**했는데 키가 없으면 Fake 로 떨어지지 않고 `UpstreamError` 를
+던진다. 더미 벡터가 DB 에 들어가면 INSERT 는 통과하고 검색만 조용히 무의미해져서,
+한참 뒤에야 드러나기 때문이다.
 
-첫 실행은 모델 가중치 약 2.3GB 를 받는다(`~/.cache/huggingface`). 이후
-기동마다 로드에 약 6초가 들고, 프로세스당 1회만 올린다.
+#### gemini 어댑터가 REST 를 직접 치는 이유
 
-**실측 (M5 Pro · 48GB / 청크 192개 / 길이 150~1200자)**
+공식 SDK(`google-genai`)를 쓰지 않는다. 실제로 호출해 확인한 두 가지 때문이다.
 
-| 구성 | 배치 | 청크/초 | 공고/분 |
-|---|---:|---:|---:|
-| 호스트 MPS fp16 | 32 | 92.0 | 1,903 |
-| 호스트 MPS fp32 | 16 | 28.3 | 585 |
-| 호스트 CPU fp32 | 16 | 6.6 | 137 |
-| **컨테이너 CPU fp32** | 16 | 3.4 | **71** |
-| Voyage 무료 등급 | — | — | 12 |
+1. **배치가 조용히 뭉개진다.** `embed_content(contents=["a","b","c"])` 는 세
+   문자열을 하나의 content 의 parts 로 합쳐 **벡터 1개**를 돌려준다. 예외도
+   경고도 없다. `embed_service` 는 반환 리스트를 인덱스로 원본 청크에
+   되붙이므로, 이게 통과하면 엉뚱한 공고에 벡터가 박힌다.
+2. **`usageMetadata` 를 버린다.** REST 응답에는 `promptTokenCount` 가 있는데
+   SDK 응답 객체에는 없다. 토큰 추정 보정(`_TokenBudget`)의 입력이 바로 그
+   값이라, SDK 를 쓰면 추정이 영원히 자기 오차를 모른다.
 
-컨테이너가 호스트 CPU 의 절반인 것은 Docker Desktop VM 오버헤드다.
-**CPU 에서는 배치 16 이 최적이다** — 같은 코퍼스로 16: 3.4 · 32: 3.1 · 64: 2.5.
-기본값 `EMBED_LOCAL_BATCH_SIZE=32` 는 GPU 기준이므로, CPU 로 돌릴 일이 있으면
-16 으로 낮춘다.
+`httpx` 는 크롤러가 이미 쓰는 의존성이라 워커 이미지도 무거워지지 않는다.
 
-fp16 은 fp32 대비 3.1배 빠르고 벡터는 사실상 같다 — 같은 청크 코사인 최소
-0.99976, top-5 이웃 일치율 96.2%. GPU(cuda/mps)에서만 켜진다. CPU 에서는
-half 연산이 가속되지 않아 무시된다.
+**실측으로 고정한 API 제약** (`gemini-embedding-2`)
 
-`EMBED_BATCH_SIZE`(96)는 **로컬에 적용되지 않는다.** 저 값은 네트워크 왕복을
-줄이려는 것이고 로컬 GPU 에서는 오히려 31% 느리다(96: 63.4 청크/초). 로컬은
-`EMBED_LOCAL_BATCH_SIZE`(기본 32)를 따로 본다. `EMBED_RPM`/`EMBED_TPM` 도
-로컬에는 해당이 없어 무시된다.
+| 항목 | 값 |
+|---|---|
+| `batchEmbedContents` 한 요청 | 최대 **100개** (101개는 400) |
+| 입력 토큰 | 8,192 / 텍스트 1개 |
+| `outputDimensionality=1024` | 동작. **정규화된 채로** 온다 (norm=1.0) |
+| 한글 토큰 비율 | 0.591 tok/char |
 
-**★ 제공자를 바꾸면 기존 벡터는 못 쓴다.** BGE-m3 와 voyage-3 는 차원이 둘 다
-1024 라 INSERT 는 멀쩡히 통과하는데 벡터 공간이 서로 달라 코사인 유사도만
-조용히 깨진다. 에러가 안 나서 알아채기 어렵다. 바꿨으면 전량 재생성할 것:
+청크는 1,200자 상한이라 토큰 한도에 걸릴 일이 없다. 청크를 나누지 않는
+**기업 프로필만** 길어질 수 있어 어댑터가 `MAX_INPUT_CHARS`(10,000자)로
+꼬리를 자른다 — 초과하면 400 이고, 400 이면 그 배치에 묶인 공고 전부가
+`embed_hash` 를 못 닫아 다음 백필에서 같은 자리에서 또 죽는 영구 루프가 된다.
+
+**실측** — 공고 32건(청크 96개)을 API 1회로 2.6초. 기업 프로필 26건은 1.9초.
+
+#### ★ 모델을 바꿨을 때 — 전량 재생성
+
+차원만 1024 로 맞으면 INSERT 는 멀쩡히 통과하는데 벡터 공간이 달라 코사인
+유사도만 조용히 깨진다. 에러가 안 나서 알아채기 어렵다.
+
+**`embed_hash` 만 비우는 것으로는 부족하다.** `chunk_hash` 는 본문 내용으로
+계산하므로 모델을 바꿔도 그대로다 — 그러면 `pending` 이 비어 "재사용"으로
+넘어가고 옛 벡터가 그대로 남는다. 청크 행을 지워야 한다.
 
 ```sql
 UPDATE market.job_posting SET embed_hash = NULL;
-DELETE FROM market.posting_chunk;
+UPDATE market.company SET embed_hash = NULL, profile_embedding = NULL;
+DELETE FROM market.posting_chunk;   -- ★ 이게 빠지면 재임베딩이 일어나지 않는다
 ```
 
 ```bash
-EMBED_PROVIDER=local uv run python -m app.cli embed
+uv run python -m app.cli embed
+uv run python -m app.cli embed --companies
 ```
 
-#### ★ 로컬 임베딩은 호스트에서만 쓴다 — 컨테이너에 넣지 말 것
+확인:
 
-**맥의 Docker 는 GPU(MPS)를 통과시키지 않는다.** Apple 의 Metal 을 리눅스 VM
-으로 넘기는 경로가 없어서, `--gpus` 같은 옵션 자체가 존재하지 않는다.
-컨테이너 안에서 `torch` 는 항상 `device=cpu` 다.
-
-실제로 워커 이미지에 넣어 봤고, 결론은 "넣지 않는다" 였다:
-
-| | 이미지 | 청크/초 | CPU 사용 |
-|---|---:|---:|---|
-| 호스트 (MPS fp16) | — | **90.7** | 코어 0.1개 (1%) |
-| 컨테이너 (CPU fp32) | 3.6GB | 3.4 | 15코어 전부 |
-| 컨테이너 (API, 현재) | 1.1GB | — | 없음 |
-
-CPU 를 다 태우면서 27배 느리다. 스레드를 묶어도 나아지지 않는다 —
-4스레드 1.9 청크/초 · 8스레드 2.9 청크/초로 속도만 같이 떨어진다.
-
-그래서 `Dockerfile` 은 `--group local` 없이 굽고(1.1GB), 워커는 임베딩 API 를
-쓴다. 로컬 임베딩이 필요하면 워커를 호스트에서 돌린다:
-
-```bash
-docker compose stop worker
-EMBED_PROVIDER=local uv run arq app.worker.WorkerSettings
+```sql
+SELECT count(*) AS chunks, count(embedding) AS with_vector,
+       min(vector_dims(embedding)) AS dim,
+       round(min(sqrt(-(embedding <#> embedding)))::numeric, 6) AS min_norm
+FROM market.posting_chunk;
 ```
-
-> 리눅스 + NVIDIA 서버라면 이야기가 다르다. 거기서는 nvidia-container-toolkit
-> 으로 컨테이너가 GPU 를 쓸 수 있다. 못 쓰는 건 **맥의 Docker** 다.
->
-> 굳이 컨테이너에 넣는다면 `pyproject.toml` 의 `[tool.uv.sources]` 가 linux 용
-> torch 를 CPU 전용 빌드로 받게 해 둔 것이 필요하다. 기본 PyPI 판은 CUDA
-> 런타임을 끌고 와서 이미지가 17.1GB 가 된다(`nvidia/` 2.9GB + `triton/` 652MB
-> 가 전부 죽은 무게). 그래서 `local` 그룹에 `torch` 가 **직접** 적혀 있다 —
-> uv 의 source 재정의는 직접 의존성에만 적용되고 전이 의존성은 건너뛴다.
 
 ### 임베딩 레이트리밋
 
-Voyage 계정에 결제수단이 없으면 **3 RPM · 10K TPM** 으로 묶인다. 명세의
-96개 배치는 이 한도를 그냥 넘어 매 요청이 429 로 튕기므로, 어댑터가
-`EMBED_RPM` · `EMBED_TPM` 을 보고 **보내기 전에** 창을 기다린다.
+**현재(gemini 선결제 등급)는 꺼 두었다.** `EMBED_RPM=0` · `EMBED_TPM=0` 이면
+`_RateLimiter` 는 통째로 no-op 이고 배치는 개수 상한(96)만 본다.
 
 ```
-EMBED_RPM=3               # 0 이면 클라이언트 제한 없음(유료 등급)
-EMBED_TPM=10000
-EMBED_BACKFILL_LIMIT=100  # 무료 등급 기준. 표준 등급이면 500
-EMBED_ENQUEUE_CHUNK=40    # crawl_site → embed_postings 한 job 당 공고 수. 0=쪼개지 않음
+EMBED_RPM=0               # 0 이면 클라이언트 제한 없음
+EMBED_TPM=0
+EMBED_BACKFILL_LIMIT=500
+EMBED_ENQUEUE_CHUNK=0     # crawl_site → embed_postings 한 job 당 공고 수. 0=쪼개지 않음
 ```
 
-무료 등급 실측: 공고 60건(청크 173개) 임베딩에 약 4분 — **분당 12건**.
-그 속도로는 500건 백필이 `job_timeout=600` 안에 못 끝나 태스크가 통째로
-잘리므로, 백필 100건 · enqueue 40건으로 낮춰 뒀다.
+장치 자체는 남겨 뒀다. 429 가 보이기 시작하면 실측값을 넣으면 된다 — 어댑터가
+`EMBED_RPM` · `EMBED_TPM` 을 보고 **보내기 전에** 창을 기다린다. 429 를 맞고
+백오프하지 않는 이유는 (1) 실패 로그가 정상 동작처럼 쌓이고 (2) 백오프가
+짧으면 1분 창이 안 지나 재시도 횟수를 그대로 태워 먹기 때문이다.
 
-**백로그가 쌓이면 백필로는 못 따라잡는다.** `EMBED_BACKFILL_LIMIT=100` 은
-하루 100건이다. 대량 수집 직후처럼 미임베딩이 수천 건이면 몇 주가 걸리므로,
-그때는 표준 등급으로 올리거나 `python -m app.cli embed` 를 직접 오래 돌린다.
+**백로그가 쌓이면 백필로는 못 따라잡는다.** `EMBED_BACKFILL_LIMIT` 은 1회
+상한이다. 대량 수집 직후처럼 미임베딩이 수천 건이면 `python -m app.cli embed`
+를 직접 돌리는 편이 빠르다.
 
 ```sql
 -- 남은 임베딩 대상
@@ -232,14 +214,6 @@ WHERE description IS NOT NULL AND body_is_image = false
   AND (embed_hash IS NULL OR embed_hash IS DISTINCT FROM content_hash);
 ```
 
-결제수단을 등록해 표준 등급으로 올린 뒤에는 네 값을 되돌린다:
-
-```
-EMBED_RPM=0
-EMBED_TPM=0
-EMBED_BACKFILL_LIMIT=500
-EMBED_ENQUEUE_CHUNK=0
-```
 
 ## Windows 개발 환경 주의
 

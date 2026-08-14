@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from app.core.config import get_settings
 from app.domains.crawler import tasks
 from app.domains.crawler.config import (
     CRAWL_CONFIG,
@@ -148,6 +149,15 @@ def _patch_crawl(monkeypatch):
     monkeypatch.setattr(tasks, "CrawlService", _StubService)
 
 
+@pytest.fixture(autouse=True)
+def _settings_cache():
+    """get_settings 는 lru_cache 다. 환경변수를 바꾼 테스트가 뒤 테스트로
+    새지 않게 앞뒤로 비운다."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 async def test_crawl_site_enqueues_only_changed_postings(_patch_crawl) -> None:
     _StubService.stats = _Stats([11, 22, 33])
     redis = FakeRedis()
@@ -158,10 +168,17 @@ async def test_crawl_site_enqueues_only_changed_postings(_patch_crawl) -> None:
 
 
 async def test_crawl_site_splits_large_enqueues(_patch_crawl, monkeypatch) -> None:
-    """★ 무료 등급은 분당 12건이라 한 job 에 300건을 넣으면 job_timeout 에 잘린다.
+    """★ 처리량이 낮은 제공자에서는 한 job 에 300건을 넣으면 job_timeout 에 잘린다.
+    (Voyage 무료 등급이 분당 12건이었다)
 
     쪼개 두면 각 job 이 시간 안에 끝나고, 하나가 실패해도 그 조각만 다시 돈다.
+
+    ★ 값을 여기서 고정한다. gemini 로 옮기며 기본값이 0(쪼개지 않음)이 됐지만,
+      이 테스트가 확인하는 것은 기본값이 아니라 쪼개는 로직 자체다.
     """
+    monkeypatch.setenv("EMBED_ENQUEUE_CHUNK", "40")
+    get_settings.cache_clear()
+
     _StubService.stats = _Stats(list(range(1, 101)))
     redis = FakeRedis()
 

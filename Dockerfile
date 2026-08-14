@@ -19,13 +19,6 @@ WORKDIR /app
 
 # ① 의존성만 먼저 (소스가 바뀌어도 재설치하지 않는다)
 #
-# ★ --group local(로컬 임베딩)은 일부러 넣지 않는다. sentence-transformers +
-#   torch 로 이미지가 1.1GB → 3.6GB 가 되는데, 맥의 Docker 는 GPU(MPS)를
-#   통과시키지 않아 컨테이너 안에서는 CPU fp32 로 3.4 청크/초밖에 안 나온다.
-#   임베딩 API(분당 12건, 무료 등급) 대비 이득이 적고 CPU 를 15코어 전부 태운다.
-#   로컬 임베딩이 필요하면 호스트에서 돌릴 것 — MPS fp16 으로 92 청크/초다.
-#       docker compose stop worker
-#       EMBED_PROVIDER=local uv run arq app.worker.WorkerSettings
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 

@@ -55,61 +55,44 @@ class Settings(BaseSettings):
 
     # ── llm ─────────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+    # ★ GOOGLE_API_KEY 는 챗봇(gemini)과 임베딩이 함께 쓰는 하나의 키다.
+    #   따로 발급하지 않는다.
+    #   지금 이 키를 실제로 쓰는 것은 임베딩뿐이다 — chat_adapter.py 는 아직
+    #   구현체가 없는 껍데기라 LLM_MODEL 기본값도 손대지 않았다.
+    google_api_key: str = ""
     llm_model: str = "claude-opus-5"
     llm_max_tokens: int = 16000
     use_fake_llm: bool = False
 
     # ── embedding ───────────────────────────────────────────────────────────
-    # 어느 어댑터를 쓸지. build_embedder() 가 이 값 하나로 분기한다.
-    #     auto   기존 동작 — 키가 있으면 voyage, 없으면 fake
-    #     local  BGE-m3 로컬 (uv sync --extra local 필요)
-    #     voyage 임베딩 API
+    # 어느 구현을 쓸지. build_embedder() 가 이 값 하나로 분기한다.
+    #     auto   키가 있으면 gemini, 없으면 fake (기본값)
+    #     gemini 임베딩 API (gemini-embedding-2). 키는 GOOGLE_API_KEY 공용
     #     fake   해시 기반 더미 벡터
     #
-    # ★ local 과 voyage 의 벡터는 호환되지 않는다. 차원이 둘 다 1024 라
-    #   INSERT 는 통과하는데 코사인 유사도만 조용히 깨진다. 제공자를 바꾸면
-    #   posting_chunk.embedding 을 전량 재생성해야 한다.
-    embed_provider: Literal["auto", "local", "voyage", "fake"] = "auto"
+    # ★ 모델을 바꾸면 기존 벡터는 못 쓴다. 차원만 1024 로 맞으면 INSERT 는
+    #   통과하는데 코사인 유사도만 조용히 깨진다. posting_chunk.embedding 과
+    #   company.embedding 을 전량 재생성해야 한다.
+    embed_provider: Literal["auto", "gemini", "fake"] = "auto"
 
-    voyage_api_key: str = ""
-    embed_model: str = "voyage-3-large"
+    gemini_embed_model: str = "gemini-embedding-2"
     embed_dim: int = EMBEDDING_DIM
+    # gemini 의 batchEmbedContents 는 한 요청에 최대 100개다(실측: 101개는 400).
+    # 96 은 그 아래라 그대로 쓴다. 어댑터가 100 으로 한 번 더 자른다.
     embed_batch_size: int = 96
     embed_max_retry: int = 3
-    embed_backfill_limit: int = 100
+    embed_backfill_limit: int = 500
     # crawl_site 가 embed_postings 를 enqueue 할 때 한 job 에 넣는 공고 수.
     # 0 이면 쪼개지 않고 한 번에 넘긴다.
-    embed_enqueue_chunk: int = 40
+    embed_enqueue_chunk: int = 0
+
     # 계정 레이트리밋. 0 이면 클라이언트에서 제한하지 않는다.
-    # Voyage 무료 등급은 3 RPM · 10K TPM 이라 96개 배치가 그대로 튕긴다.
-    # 결제수단을 등록하면 표준 등급으로 올라가므로 그때 0 으로 되돌린다.
+    #
+    # gemini 선결제 등급은 한도가 충분히 위에 있어 기본은 0(끔) 이다. 끄면
+    # 배치는 개수 상한(96)만 보고 _RateLimiter 는 통째로 no-op 이 된다.
+    # 429 가 실제로 보이기 시작하면 그때 실측값을 넣는다.
     embed_rpm: int = 0
     embed_tpm: int = 0
-
-    # ── embedding (local / BGE-m3) ──────────────────────────────────────────
-    # EMBED_PROVIDER=local 일 때만 쓰인다. 레이트리밋 설정(EMBED_RPM/TPM)은
-    # 로컬에 해당이 없어 무시된다.
-    embed_local_model: str = "BAAI/bge-m3"
-    # 빈 문자열이면 자동 감지 (cuda → mps → cpu).
-    embed_local_device: str = ""
-    # 배치 크기를 API 쪽(EMBED_BATCH_SIZE=96)과 나눠 둔 이유:
-    # 96 은 네트워크 왕복을 줄이려는 값이고, 로컬 GPU 에서는 32 가 최적이다.
-    # M5 Pro 실측 — 32: 92.0청크/초 · 64: 78.6 · 96: 63.4
-    embed_local_batch_size: int = 32
-    # GPU(cuda/mps)에서만 적용된다. fp32 대비 3.1배 빠르고 벡터는 사실상 같다
-    # (코사인 최소 0.99976). CPU 에서는 가속되지 않아 무시한다.
-    embed_local_fp16: bool = True
-
-    # ── 배치 크기 되돌리기 ──────────────────────────────────────────────────
-    # 무료 등급(3 RPM · 10K TPM)에서는 분당 12건쯤 처리된다. 그 속도로는
-    # 500건 백필이 job_timeout=600 안에 못 끝나 태스크가 통째로 잘린다.
-    # 그래서 백필 100건 · enqueue 40건으로 낮춰 뒀다.
-    #
-    # 표준 등급으로 올린 뒤에는 .env 에서 이렇게 되돌린다.
-    #     EMBED_RPM=0
-    #     EMBED_TPM=0
-    #     EMBED_BACKFILL_LIMIT=500
-    #     EMBED_ENQUEUE_CHUNK=0
 
     # ── chat guard ──────────────────────────────────────────────────────────
     chat_recursion_limit: int = 8

@@ -23,7 +23,7 @@
 | `crawl_run` | __CRAWL_RUN__ | 수집 실행 이력 |
 
 수집처: 사람인 · 원티드 · 점핏 (잡코리아는 보류).
-임베딩 모델: **voyage-3 · 1024차원 · 코사인 거리**.
+임베딩 모델: **gemini-embedding-2 · 1024차원 · 코사인 거리**.
 
 ---
 
@@ -412,7 +412,7 @@ skill_field    PK (skill_id, field_id)
 | `seq` | integer | 섹션이 1,200자 초과 시 분할 번호 |
 | `content` | text | 임베딩에 실제로 넣은 텍스트 |
 | `chunk_hash` | char(64) | `sha256(section + 정규화 content)` |
-| `embedding` | vector(1024) | voyage-3 · 코사인 |
+| `embedding` | vector(1024) | gemini-embedding-2 · 코사인 |
 | `token_count` | integer | 근사치 |
 | `created_at` | timestamptz | |
 
@@ -484,11 +484,12 @@ WHERE salary_type IN ('range','min_only','max_only')
 -- "실제로 요구되는 기술" 집계
 WHERE ps.requirement IN ('required','tag') AND NOT s.is_common
 
--- 벡터 검색 (질의도 voyage-3 로 임베딩해야 함)
+-- 벡터 검색 (질의도 gemini-embedding-2 로 임베딩해야 함)
 ORDER BY pc.embedding <=> $1::vector LIMIT 20
 ```
 
 - `salary_period = 'hourly'` 는 근무시간을 몰라 연환산이 불가능합니다. 통계에서 빼세요.
-- 벡터 검색의 질의 임베딩은 **반드시 같은 모델(voyage-3, 1024차원)** 이어야 합니다.
+- 벡터 검색의 질의 임베딩은 **반드시 같은 모델(gemini-embedding-2, 1024차원)** 이어야 합니다.
+  taskType 도 맞춰야 합니다 — 적재는 `RETRIEVAL_DOCUMENT`, 질의는 `RETRIEVAL_QUERY`.
   다른 모델 벡터와는 비교 자체가 성립하지 않습니다.
 - `skill.embedding` 은 비어 있습니다(챗봇 작업에서 채울 예정). 인덱스도 없습니다.

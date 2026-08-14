@@ -79,7 +79,33 @@ Voyage 무료 등급은 3 RPM · 10K TPM. 96개 배치는 한도를 그냥 넘�
 429 로 튕긴다. 429 를 맞고 백오프하는 방식은 (1) 실패 로그가 정상처럼 쌓이고
 (2) 지수 백오프 1·2·4초로는 1분 창을 못 넘겨 재시도를 그대로 태워 먹는다.
 보내기 전에 슬라이딩 윈도우를 확인해 기다리고, 추정 오차 대비 20% 여유를 둔다.
-결제수단 등록 후에는 EMBED_RPM/EMBED_TPM 을 0 으로 되돌린다.
+gemini(선결제)로 옮기며 EMBED_RPM/EMBED_TPM 은 0 으로 껐다. 장치는 남겨 뒀다.
+(Voyage 어댑터 자체는 gemini 전환 후 제거했다 — 아래 항목)
+
+## 임베딩 제공자를 gemini 로 바꿨다 (프롬프트 5)
+gemini-embedding-2 · outputDimensionality=1024. 키는 챗봇과 공용
+(GOOGLE_API_KEY). 차원을 1024 로 명시하면 정규화된 채로 와서 vector(1024)
+스키마와 재정규화 없이 맞는다 — 컬럼 타입도 마이그레이션도 그대로다.
+
+★ 공식 SDK(google-genai)를 쓰지 않고 httpx 로 REST 를 직접 친다. 두 가지가
+파이프라인에 치명적이라서다. (1) embed_content(contents=[3개 문자열]) 이 세
+문자열을 한 content 의 parts 로 합쳐 벡터 1개를 돌려준다 — 예외도 경고도 없고,
+embed_service 는 인덱스로 되붙이므로 엉뚱한 공고에 벡터가 박힌다. (2) 응답의
+usageMetadata 를 버려서 _TokenBudget 의 보정 신호가 사라진다.
+
+실측 제약: 배치 상한 100개(101개는 400), 입력 8192토큰/텍스트, 한글 0.591
+tok/char. 청크는 1200자 상한이라 안전하고, 청크를 안 나누는 기업 프로필만
+어댑터가 10,000자로 자른다 — 400 은 재시도로 안 풀려서, 배치에 묶인 공고
+전부가 embed_hash 를 못 닫고 다음 백필에서 또 죽는 영구 루프가 된다.
+
+voyage 어댑터와 로컬(BGE-m3) 어댑터는 전환이 끝난 뒤 지웠다. 남겨 두면
+쓰지 않는 의존성(voyageai · sentence-transformers · torch)과, "제공자가 셋이라
+벡터 공간이 섞일 수 있다" 는 경고를 계속 관리해야 한다. 남은 분기는
+gemini / fake 둘뿐이고 레이트리밋·토큰 추정은 gemini 어댑터 안에 있다.
+
+★ 제공자를 바꾸면 embed_hash 만 비우는 것으로 부족하다. chunk_hash 는 본문
+내용으로 계산해 모델이 바뀌어도 그대로라, pending 이 비어 "재사용"으로 넘어가고
+옛 벡터가 남는다. posting_chunk 행을 지워야 재임베딩이 일어난다.
 
 ## RawJob.employment_type 누락 (프롬프트 4)
 세 어댑터 모두 값을 만들어 넘기는데 RawJob 에 필드가 없어 pydantic 이 조용히

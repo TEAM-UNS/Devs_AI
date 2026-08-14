@@ -65,10 +65,13 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["sessionmaker"] = get_sessionmaker()
     ctx["embedder"] = build_embedder()
 
+    # 모델 이름은 settings 가 아니라 어댑터 인스턴스에서 읽는다. FakeEmbedder
+    # 로 떨어졌는데 로그에는 실제 모델명이 찍히는 상황을 만들지 않기 위함이다.
+    embedder = ctx["embedder"]
     log.info(
         "worker 기동 — embedder=%s model=%s dim=%d",
-        type(ctx["embedder"]).__name__,
-        settings.embed_model,
+        type(embedder).__name__,
+        getattr(embedder, "model", "-"),
         settings.embed_dim,
     )
 

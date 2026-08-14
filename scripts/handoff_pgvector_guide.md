@@ -251,6 +251,6 @@ ERROR: could not resize shared memory segment to 533794304 bytes:
 
 ## 참고
 
-- 벡터는 **voyage-3 · 1024차원** 입니다. 검색 질의도 같은 모델로 임베딩해야
+- 벡터는 **gemini-embedding-2 · 1024차원** 입니다. 검색 질의도 같은 모델로 임베딩해야
   결과가 성립합니다. 다른 모델 벡터와 섞으면 안 됩니다.
 - 공식 문서: https://github.com/pgvector/pgvector
