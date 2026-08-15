@@ -110,13 +110,17 @@ class Settings(BaseSettings):
     crawl_keywords: str = ""
 
     # ── 파생 값 ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _parse_comma_list(raw_string: str) -> list[str]:
+        return [item.strip() for item in raw_string.split(",") if item.strip()]
+
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return self._parse_comma_list(self.cors_origins)
 
     @property
     def crawl_keyword_list(self) -> list[str]:
-        return [k.strip() for k in self.crawl_keywords.split(",") if k.strip()]
+        return self._parse_comma_list(self.crawl_keywords)
 
     @property
     def effective_chat_database_url(self) -> str:
