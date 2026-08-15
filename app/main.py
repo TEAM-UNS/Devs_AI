@@ -28,6 +28,7 @@ ensure_selector_event_loop_policy()
 
 # from app.domains.chat.router import router as chat_router
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -36,9 +37,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="jobstack-ai", lifespan=lifespan)
 
+# ★ cors_origins(콤마 문자열)를 그대로 넘기면 안 된다. Starlette 의 검사가
+#   `origin in self.allow_origins` 인데, 문자열에 in 을 쓰면 부분문자열 매칭이
+#   되어 https://jobstack.co 가 https://jobstack.com 설정을 통과한다.
+#   allow_credentials=True 와 겹치면 유사 도메인이 인증된 응답을 읽는다.
+#   개발 중에는 localhost origin 이 서로 부분문자열이라 멀쩡히 동작해 안 드러난다.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_origins,
+    allow_origins=get_settings().cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
