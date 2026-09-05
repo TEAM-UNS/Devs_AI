@@ -19,8 +19,10 @@ IT 채용공고를 수집·분석해 AI 챗봇으로 답변하는 서비스의 �
 - crawler → market.repository (쓰기)만
 - chat → market.queries (읽기)만. market.models / repository 직접 참조 금지
 - 외부 API(LLM, 임베딩)만 포트/어댑터로 분리. 리포지토리는 인터페이스 만들지 않는다
-- 비즈니스 상수(기업 규모 구간, 증감률 스무딩 계수 등)는 core/enums.py 에만 둔다.
-  서비스 코드에 숫자 리터럴이 보이면 옮길 신호다
+- Enum · 비즈니스 상수는 그 값을 소유한 도메인에 둔다
+  (market/enums.py, chat/enums.py). core 에는 인프라(config·database·redis)와
+  예외 기반 클래스만 둔다
+- 예외는 core/exceptions.py 에 AppError + 핸들러만. 구체 예외는 각 도메인이 소유한다
 
 ## 코딩 규칙
 

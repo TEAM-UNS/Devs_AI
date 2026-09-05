@@ -7,31 +7,36 @@ queries.py 를 구현할 때 여기에 추가한다.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
 class SkillDictionaryRow:
-    """추출기에 넘기는 별칭 사전 1행.
-
-    위치 인자 튜플로 주고받으면 컬럼이 늘 때마다 조용히 어긋나서 DTO 로 둔다.
-    이 타입을 market 이 소유하는 이유는 R1 때문이다 —
-    market 은 crawler 를 import 할 수 없으므로 경계 타입도 market 쪽에 있어야 한다.
-    """
-
     skill_id: int
     name: str
     is_ambiguous: bool = False
     is_common: bool = False
-    # 대소문자 무시 별칭 (소문자). 정규 표기도 포함한다.
     aliases: list[str] = field(default_factory=list)
-    # 대소문자 구분 별칭 (표기 그대로). CAN · ES · R · C 처럼 영어 문장과
-    # 겹치는 짧은 토큰이 대상이다.
     cs_aliases: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class UnmatchedTag:
-    """사전에 없는 사이트 태그. 사전 보강 대상 리포트에 쓴다."""
-
     tag: str
     count: int
+
+
+@dataclass(frozen=True)
+class DataCoverage:
+    collected_from: date
+    collected_to: date
+    total_postings: int
+    active_postings: int
+    image_only_ratio: float
+    salary_disclosure_rate: float
+    requirement_breakdown: dict[str, int]
+    by_field: dict[str, int]
+    # ★ field_id IS NULL 인 공고. by_field 에 넣으면 "미분류" 가 분야인 것처럼
+    unclassified_postings: int
+    company_count: int
+    last_crawl_at: datetime | None

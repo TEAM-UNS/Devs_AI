@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import get_settings
-from app.core.exceptions import UpstreamError
 from app.llm.embed_adapter import build_embedder
+from app.llm.exceptions import UpstreamError
 from app.llm.fake import FakeEmbedder
 from app.llm.gemini_embed_adapter import GeminiEmbedder
 

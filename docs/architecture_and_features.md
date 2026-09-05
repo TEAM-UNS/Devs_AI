@@ -93,7 +93,7 @@ ai-service/
 | R2 | `crawler` → `market.repository` (쓰기)만 |
 | R3 | `chat` → `market.queries` (읽기)만. `market.models` / `repository` 직접 참조 금지 |
 | R4 | `llm/port.py` 는 어댑터를 모른다. 주입만 받는다 |
-| R5 | 비즈니스 상수(규모 구간, 스무딩 계수 등)는 `core/enums.py` 에만 |
+| R5 | Enum·비즈니스 상수는 소유 도메인에 (`market/enums.py`, `chat/enums.py`) |
 
 > R3은 `import-linter` 로 CI에서 강제 권장
 

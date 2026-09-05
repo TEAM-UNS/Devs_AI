@@ -25,7 +25,6 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core import enums
 from app.core.config import get_settings
 from app.core.redis import crawl_job_id
 from app.domains.crawler import embed_service
@@ -35,14 +34,13 @@ from app.domains.crawler.config import (
     iter_crawl_jobs,
 )
 from app.domains.crawler.service import CrawlService
-from app.domains.market import repository
+from app.domains.market import enums, repository
 from app.llm.port import EmbedderPort
 
 log = logging.getLogger(__name__)
 
 
 def _sessionmaker(ctx: dict[str, Any]) -> embed_service.SessionFactory:
-    """on_startup 이 넣어 둔 sessionmaker. 없으면 즉시 실패시킨다."""
     factory = ctx.get("sessionmaker")
     if factory is None:
         raise RuntimeError(
@@ -59,33 +57,21 @@ def _embedder(ctx: dict[str, Any]) -> EmbedderPort:
 
 
 def _chunked(items: list[int], size: int) -> list[list[int]]:
-    """size 개씩 자른다. size<=0 이면 통째로 하나."""
     if size <= 0 or len(items) <= size:
         return [items]
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  수집
 # ═══════════════════════════════════════════════════════════════════════════
 async def crawl_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
-    """04:00 — CRAWL_CONFIG 대로 crawl_site 를 팬아웃한다.
-
-    ★ enqueue 하고 즉시 끝난다. "오늘 수집 전체 완료" 는 추적하지 않는다
-      (명세 3-4). 05:30 백필이 누락분을 청소해 결과적 정합성을 보장한다.
-      batch_id + Redis 카운터 같은 구조를 만들지 않는다.
-    """
     redis = ctx["redis"]
     # ★ 로컬 날짜다. arq cron 은 로컬 시각 04:00 에 뜨는데 여기서 UTC 날짜를
-    #   쓰면 KST 04:00 = 전날 19:00 UTC 라 날짜 경계가 어긋난다. 그러면 같은
-    #   날 낮에 수동으로 다시 돌렸을 때 중복 차단이 안 걸린다.
     day = datetime.now().astimezone().strftime("%Y%m%d")
 
     enqueued = 0
     duplicated = 0
     for job in iter_crawl_jobs():
-        # 같은 날 같은 (사이트, 키워드) 는 한 번만. 이미 큐에 있으면
-        # enqueue_job 이 None 을 돌려준다.
         result = await redis.enqueue_job(
             "crawl_site",
             job.site,
@@ -111,11 +97,6 @@ async def crawl_site(
     pages: int = 1,
     skip_seen_days: int = DEFAULT_SKIP_SEEN_DAYS,
 ) -> dict[str, Any]:
-    """한 사이트(+키워드) 수집 → upsert → 변경분 embed_postings enqueue.
-
-    1페이지 0건이면 SelectorBrokenError 가 올라와 태스크가 실패하고
-    crawl_run 은 status='failed' 로 닫힌다 (명세 3-3).
-    """
     log.info(
         "crawl_site 시작: site=%s keyword=%s pages=%d skip_seen_days=%d",
         site,
@@ -133,18 +114,8 @@ async def crawl_site(
             keyword=keyword,
         )
 
-    # 변경분만 임베딩으로 넘긴다. 해시가 같아 touch 만 한 공고는 재임베딩할
-    # 것이 없다.
-    #
     # ★ EMBED_ENQUEUE_CHUNK 개씩 쪼개서 여러 job 으로 넘긴다. 사람인 8페이지
-    #   전체 재수집이면 변경분이 300건씩 나오는데, 무료 등급(분당 12건)에서
-    #   한 job 에 몰아넣으면 job_timeout=600 안에 못 끝나고 통째로 잘린다.
-    #   쪼개 두면 각 job 이 시간 안에 끝나고, 하나가 실패해도 그 조각만 다시
-    #   돈다. 표준 등급으로 올리면 0 으로 두어 한 번에 넘기면 된다.
-    #
     # ★ enqueue 실패로 태스크를 죽이지 않는다. 여기서 예외를 올리면 arq 가
-    #   수집 전체를 재시도해 방금 끝낸 수백 건의 요청을 다시 쏜다. 임베딩은
-    #   05:30 백필이 주워 가므로 로그만 남기고 넘어가는 쪽이 싸다.
     if stats.changed_posting_ids:
         try:
             for batch in _chunked(stats.changed_posting_ids, get_settings().embed_enqueue_chunk):
@@ -171,14 +142,8 @@ async def crawl_site(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  임베딩
 # ═══════════════════════════════════════════════════════════════════════════
 async def embed_postings(ctx: dict[str, Any], posting_ids: list[int]) -> dict[str, Any]:
-    """지정 공고를 임베딩한다. 청크 분할 → 배치 임베딩 → upsert.
-
-    멱등하다. 재시도로 같은 id 가 다시 들어와도 embed_hash · chunk_hash 가
-    같으면 API 를 부르지 않는다.
-    """
     return await _run_embed(
         ctx,
         source="postings",
@@ -189,13 +154,6 @@ async def embed_postings(ctx: dict[str, Any], posting_ids: list[int]) -> dict[st
 
 
 async def embed_backfill(ctx: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
-    """05:30 — 누락·실패분 청소.
-
-    crawl_site 가 enqueue 한 embed_postings 가 죽었거나, 임베딩 API 가
-    실패해 embed_hash 를 못 닫은 공고를 여기서 주워 간다.
-
-    한 번에 EMBED_BACKFILL_LIMIT 건만 본다. 남은 것은 다음날 백필이 가져간다.
-    """
     cap = limit or get_settings().embed_backfill_limit
     return await _run_embed(
         ctx,
@@ -205,7 +163,6 @@ async def embed_backfill(ctx: dict[str, Any], limit: int | None = None) -> dict[
 
 
 async def embed_companies(ctx: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
-    """06:00 — 기업 프로필(설명+사업내용+업종) 변경분 임베딩."""
     return await _run_embed(
         ctx,
         source="companies",
@@ -223,10 +180,6 @@ async def _run_embed(
         [embed_service.SessionFactory, EmbedderPort], Awaitable[embed_service.EmbedStats]
     ],
 ) -> dict[str, Any]:
-    """임베딩 태스크 공통 — crawl_run 기록 + 실행 + 마감.
-
-    수집과 달리 임베딩은 서비스가 run 을 열지 않으므로 여기서 연다.
-    """
     factory = _sessionmaker(ctx)
     embedder = _embedder(ctx)
 

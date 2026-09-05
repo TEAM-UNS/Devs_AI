@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator
 import pytest
 from sqlalchemy import text
 
-from app.core.database import session_scope
+from app.core.database import get_worker_session
 from app.domains.crawler import embed_service
 from app.domains.market import repository
 
@@ -74,7 +74,7 @@ async def postings(db) -> AsyncIterator[_Fixture]:
     yield fixture
 
     if fixture.ids:
-        async with session_scope() as session:
+        async with get_worker_session() as session:
             await session.exec(
                 text("DELETE FROM market.job_posting WHERE id = ANY(:ids)").bindparams(
                     ids=fixture.ids
@@ -93,14 +93,14 @@ async def _insert(fixture: _Fixture, *, body: str | None, **overrides) -> int:
         "body_extract_failed": False,
         **overrides,
     }
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         posting_id = await repository.upsert_posting(session, values)
     fixture.ids.append(posting_id)
     return posting_id
 
 
 async def _chunks(posting_id: int) -> list[tuple[str, int, str]]:
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         rows = (
             await session.exec(
                 text(
@@ -113,7 +113,7 @@ async def _chunks(posting_id: int) -> list[tuple[str, int, str]]:
 
 
 async def _embed_hash(posting_id: int) -> str | None:
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         row = (
             await session.exec(
                 text("SELECT embed_hash FROM market.job_posting WHERE id = :pid").bindparams(
@@ -125,7 +125,7 @@ async def _embed_hash(posting_id: int) -> str | None:
 
 
 async def _vector_is_set(posting_id: int) -> bool:
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         row = (
             await session.exec(
                 text(
@@ -143,7 +143,7 @@ async def test_full_pipeline_with_fake_embedder(postings, fake_embedder) -> None
     posting_id = await _insert(postings, body=BODY_V1)
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.targets == 1
@@ -160,11 +160,11 @@ async def test_full_pipeline_with_fake_embedder(postings, fake_embedder) -> None
 async def test_second_run_is_a_no_op(postings, fake_embedder) -> None:
     """★ 같은 명령을 두 번 실행하면 두 번째는 0건 · API 0회."""
     posting_id = await _insert(postings, body=BODY_V1)
-    await embed_service.embed_postings(session_scope, fake_embedder, posting_ids=[posting_id])
+    await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     calls_after_first = fake_embedder.call_count
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.targets == 0
@@ -180,7 +180,7 @@ async def test_many_postings_share_one_api_call(postings, fake_embedder) -> None
     """
     ids = [await _insert(postings, body=BODY_V1 + f"\n- 항목 {i}") for i in range(10)]
 
-    stats = await embed_service.embed_postings(session_scope, fake_embedder, posting_ids=ids)
+    stats = await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=ids)
 
     assert stats.targets == 10
     assert stats.postings == 10
@@ -194,7 +194,7 @@ async def test_batch_size_is_respected(postings, fake_embedder) -> None:
     ids = [await _insert(postings, body=BODY_V1 + f"\n- 항목 {i}") for i in range(40)]
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=ids, batch_size=96
+        get_worker_session, fake_embedder, posting_ids=ids, batch_size=96
     )
 
     assert stats.chunks_written == 120
@@ -204,10 +204,10 @@ async def test_batch_size_is_respected(postings, fake_embedder) -> None:
 async def test_only_changed_chunk_is_re_embedded(postings, fake_embedder) -> None:
     """자격요건만 바뀌면 청크 1개만 다시 부른다 (chunk_hash 비교)."""
     posting_id = await _insert(postings, body=BODY_V1)
-    await embed_service.embed_postings(session_scope, fake_embedder, posting_ids=[posting_id])
+    await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     before = await _chunks(posting_id)
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await session.exec(
             text(
                 "UPDATE market.job_posting SET description = :body, content_hash = :h "
@@ -216,7 +216,7 @@ async def test_only_changed_chunk_is_re_embedded(postings, fake_embedder) -> Non
         )
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.chunks_written == 1, "바뀌지 않은 청크까지 다시 임베딩했다"
@@ -235,10 +235,10 @@ async def test_shrunk_body_deletes_stale_chunks(postings, fake_embedder) -> None
     안 지우면 원문에 없는 문장이 검색 근거로 계속 인용된다.
     """
     posting_id = await _insert(postings, body=BODY_V1)
-    await embed_service.embed_postings(session_scope, fake_embedder, posting_ids=[posting_id])
+    await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     assert len(await _chunks(posting_id)) == 3
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await session.exec(
             text(
                 "UPDATE market.job_posting SET description = :body, content_hash = :h "
@@ -247,7 +247,7 @@ async def test_shrunk_body_deletes_stale_chunks(postings, fake_embedder) -> None
         )
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.chunks_deleted == 2
@@ -270,7 +270,7 @@ async def test_excluded_postings_are_never_targets(
     posting_id = await _insert(postings, body=body, **overrides)
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.targets == 0
@@ -283,7 +283,7 @@ async def test_body_without_embeddable_section_closes_hash(postings, fake_embedd
     posting_id = await _insert(postings, body="복리후생\n- 점심 제공\n- 야근 없음")
 
     stats = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
 
     assert stats.targets == 1
@@ -292,6 +292,6 @@ async def test_body_without_embeddable_section_closes_hash(postings, fake_embedd
     assert await _embed_hash(posting_id) is not None
 
     again = await embed_service.embed_postings(
-        session_scope, fake_embedder, posting_ids=[posting_id]
+        get_worker_session, fake_embedder, posting_ids=[posting_id]
     )
     assert again.targets == 0

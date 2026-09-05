@@ -10,13 +10,13 @@
 
 from __future__ import annotations
 
-from app.core.enums import ChunkSection
 from app.domains.crawler.chunker import (
     CHUNK_MAX_CHARS,
     build_chunks,
     hash_chunk,
     normalize,
 )
+from app.domains.market.enums import ChunkSection
 
 FULL_BODY = """[주요업무]
 - 결제 서버 API 개발 및 운영

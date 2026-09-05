@@ -24,12 +24,7 @@ import time
 
 from sqlalchemy import text as sa_text
 
-from app.core.database import (
-    dispose_engines,
-    ensure_selector_event_loop_policy,
-    get_sessionmaker,
-    session_scope,
-)
+from app.core.database import close_engine, get_worker_session, session_factory
 from app.domains.crawler import embed_service
 from app.domains.crawler.config import DEFAULT_SKIP_SEEN_DAYS
 from app.domains.crawler.service import (
@@ -47,22 +42,13 @@ from app.llm.embed_adapter import build_embedder
 
 log = logging.getLogger(__name__)
 
-# Windows: psycopg async 는 SelectorEventLoop 를 요구한다. 루프 생성 전에 호출.
-ensure_selector_event_loop_policy()
-
 SITES: dict[str, type[BaseSiteCrawler]] = {
     "jumpit": JumpitCrawler,
     "wanted": WantedCrawler,
     "saramin": SaraminCrawler,
-    # "jobkorea": JobkoreaCrawler,
-    #   본문이 HTML에 없음(JS 별도 엔드포인트). 유효 수율 18%로 비활성.
-    #   스냅샷 103건 보존 (data/raw/jobkorea/). 엔드포인트를 찾으면 되살린다.
-    #   sites/jobkorea.py 와 fixture·테스트는 그대로 유지한다.
 }
-# 키워드 검색이 필요한 사이트
 KEYWORD_SITES = {"saramin", "jobkorea"}
 
-# 비활성 사이트도 스냅샷 재파싱·테스트에는 쓸 수 있게 남겨둔다.
 DISABLED_SITES: dict[str, type[BaseSiteCrawler]] = {"jobkorea": JobkoreaCrawler}
 
 
@@ -126,7 +112,6 @@ async def cmd_inspect(args: argparse.Namespace) -> int:
                 f"{crawler.snapshot_dir / f'position_{detailed.source_job_id}.json'}"
             )
 
-        # 목록 원본의 첫 항목 키를 그대로 보여준다 (필드 추측 방지)
         first_raw = jobs[0].raw.get("list", {})
         print(f"\n=== 목록 원본 필드명 ({len(first_raw)}개) ===")
         print(json.dumps(sorted(first_raw.keys()), ensure_ascii=False))
@@ -160,15 +145,14 @@ async def cmd_crawl(args: argparse.Namespace) -> int:
         for msg in stats.error_messages[:5]:
             print(f"    - {msg}")
 
-    await dispose_engines()
+    await close_engine()
     return 0 if stats.fetched else 1
 
 
 # ── embed ───────────────────────────────────────────────────────────────────
 async def cmd_embed(args: argparse.Namespace) -> int:
-    """arq 없이 임베딩만 돌린다. 태스크와 같은 서비스 함수를 부른다."""
     embedder = build_embedder(force_fake=args.fake)
-    factory = get_sessionmaker()
+    factory = session_factory
     started = time.monotonic()
 
     print(f"\n=== 임베딩 시작 (embedder={type(embedder).__name__}) ===")
@@ -189,7 +173,7 @@ async def cmd_embed(args: argparse.Namespace) -> int:
         for msg in stats.error_messages[:5]:
             print(f"    - {msg}")
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         remaining = await repository.count_postings_to_embed(session)
         by_section = await repository.count_chunks_by_section(session)
 
@@ -198,24 +182,17 @@ async def cmd_embed(args: argparse.Namespace) -> int:
     for section, count in by_section:
         print(f"    {section:<16} {count}")
 
-    await dispose_engines()
+    await close_engine()
     return 0 if stats.errors == 0 else 1
 
 
 # ── vector-index ────────────────────────────────────────────────────────────
 async def cmd_vector_index(args: argparse.Namespace) -> int:
-    """HNSW 인덱스를 데이터 적재 뒤에 만든다.
-
-    빈 테이블에 인덱스를 먼저 걸면 INSERT 마다 그래프를 갱신하느라 초기
-    적재가 몇 배 느려진다. 마이그레이션은 인덱스 없이 스키마만 만들고,
-    적재가 끝난 뒤 이 명령으로 세운다.
-    """
     action = "DROP" if args.drop else "BUILD"
     print(f"\n=== HNSW 인덱스 {action} ===")
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         if not args.drop:
-            # 병렬 빌드는 도커 기본 /dev/shm(64MB)에서 터진다. 직렬로 짓는다.
             for setup in vector_index.BUILD_SESSION_SETUP:
                 await session.exec(sa_text(setup))
 
@@ -237,7 +214,7 @@ async def cmd_vector_index(args: argparse.Namespace) -> int:
         ).all()
 
     print(f"\n  현재 HNSW 인덱스: {[r[0] for r in rows] or '(없음)'}")
-    await dispose_engines()
+    await close_engine()
     return 0
 
 
@@ -263,25 +240,19 @@ async def cmd_reparse(args: argparse.Namespace) -> int:
     if stats.without_skills:
         print(f"  !! 스킬이 하나도 안 잡힌 공고 {stats.without_skills}건 — 사전 보강 후보")
 
-    await dispose_engines()
+    await close_engine()
     return 0 if stats.errors == 0 else 1
 
 
 # ── skills report ───────────────────────────────────────────────────────────
 async def cmd_skills_report(args: argparse.Namespace) -> int:
-    """사이트 태그 중 사전에 없는 값을 빈도순으로 보여준다.
-
-    자동으로 스킬을 만들지 않는다. 사전은 사람이 검토해서 늘린다.
-    matched_ratio 는 사전 재현율의 근사치다 — 사이트가 붙인 태그를
-    정답으로 보고 그중 몇 %를 사전이 알아보는지 센다.
-    """
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         unmatched, total, matched = await repository.count_unmatched_tags(session, source=args.site)
 
     print("\n=== 사전 재현율 (사이트 태그 기준) ===")
     if total == 0:
         print("태그가 있는 공고가 없습니다.")
-        await dispose_engines()
+        await close_engine()
         return 0
 
     print(f"  전체 태그      : {total}")
@@ -297,7 +268,7 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
         print("\n검토 후 app/domains/market/seed_data.py 에 추가하고 아래를 실행하세요:")
         print("  uv run python -m scripts.seed_skills && uv run python -m app.cli reparse")
 
-    await dispose_engines()
+    await close_engine()
     return 0
 
 
@@ -345,7 +316,6 @@ def main(argv: list[str] | None = None) -> int:
     p_index.set_defaults(func=cmd_vector_index)
 
     p_reparse = sub.add_parser("reparse", help="저장된 본문으로 스택만 다시 추출 (재수집 없음)")
-    # 비활성 사이트도 스냅샷 재파싱 대상으로는 허용한다.
     p_reparse.add_argument(
         "--site", choices=sorted({*SITES, *DISABLED_SITES}), help="생략하면 전체"
     )

@@ -28,3 +28,25 @@ ORM 엔티티가 아니라 schemas.py 의 DTO 를 반환한다.
 
 주의: 표본이 작은 결과에는 sample_size 를 반드시 함께 실어 보낸다.
 """
+
+from __future__ import annotations
+
+from sqlmodel import func, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.domains.market.models import (
+    JobPosting,
+)
+from app.domains.market.schemas import (
+    DataCoverage,
+)
+
+# ── 공용 표현식 ─────────────────────────────────────────────────────────────
+# ★ collected_at 을 쓰면 안 된다. 재수집 때마다 갱신되는 "마지막으로 본 시각"
+APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
+
+
+async def data_coverage(
+    session: AsyncSession,
+) -> DataCoverage:
+    stmt = select()

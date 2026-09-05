@@ -21,7 +21,7 @@ import pytest
 import respx
 
 from app.core.config import get_settings
-from app.core.exceptions import UpstreamError
+from app.llm.exceptions import UpstreamError
 from app.llm.gemini_embed_adapter import MAX_BATCH, MAX_INPUT_CHARS, GeminiEmbedder
 from app.llm.port import EmbedderPort
 

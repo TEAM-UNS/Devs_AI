@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
-from app.core.database import session_scope
+from app.core.database import get_worker_session
 from app.domains.crawler.schemas import RawJob
 from app.domains.crawler.service import CrawlService
 from app.domains.crawler.sites.base import BaseSiteCrawler, SelectorBrokenError
@@ -75,7 +75,7 @@ async def tag(db) -> AsyncIterator[str]:
     value = uuid.uuid4().hex[:12]
     yield value
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await session.exec(
             text("DELETE FROM market.job_posting WHERE source_job_id LIKE :pattern").bindparams(
                 pattern=f"stub-{value}-%"
@@ -88,7 +88,7 @@ async def tag(db) -> AsyncIterator[str]:
 
 async def _last_run(keyword: str) -> tuple[str, int, int, int]:
     """(status, fetched, inserted, skipped) — crawl_run 마감 상태."""
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         row = (
             await session.exec(
                 text(

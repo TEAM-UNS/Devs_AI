@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 
-from app.core.enums import EMBEDDING_DIM
+from app.core.config import get_settings
 from app.llm.fake import FakeEmbedder
 from app.llm.port import EmbedderPort
 
@@ -20,7 +20,7 @@ def test_satisfies_the_port() -> None:
 async def test_dimension_matches_schema() -> None:
     vectors = await FakeEmbedder().embed_documents(["백엔드 개발자"])
     assert len(vectors) == 1
-    assert len(vectors[0]) == EMBEDDING_DIM
+    assert len(vectors[0]) == get_settings().embed_dim
 
 
 async def test_is_deterministic() -> None:
