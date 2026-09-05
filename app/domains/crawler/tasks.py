@@ -2,11 +2,13 @@
 
     crawl_dispatch()            04:00 cron. 사이트×키워드 조합으로 팬아웃
                                 _job_id = f"crawl:{site}:{keyword}:{date}" 로 중복 차단
-    crawl_site(site, keyword)   수집 → upsert → 변경분 embed_postings enqueue
-                                재시도 3
+    crawl_site(site, keyword)   수집 → upsert. 재시도 3
+                                ★ 임베딩을 걸지 않는다. 적재만 하고, 임베딩은
+                                  나중에 로컬 모델로 한 번에 돌린다
+                                  (python -m app.cli embed)
     embed_postings(ids)         청크 분할 → 배치 임베딩 → upsert. 재시도 3
-    embed_backfill()            05:30. 누락·실패분 최대 500건. 재시도 2
-    embed_companies()           06:00. 기업 설명 변경분. 재시도 2
+    embed_backfill()            누락·실패분. cron 없음 — 수동 실행 전용
+    embed_companies()           기업 설명 변경분. cron 없음 — 수동 실행 전용
 
 공통
     - 시작 시 crawl_run(status=running) 기록, 종료 시 success/partial/failed 마감
@@ -54,12 +56,6 @@ def _embedder(ctx: dict[str, Any]) -> EmbedderPort:
     if embedder is None:
         raise RuntimeError("ctx['embedder'] 가 없습니다. worker.on_startup 을 확인하세요.")
     return embedder
-
-
-def _chunked(items: list[int], size: int) -> list[list[int]]:
-    if size <= 0 or len(items) <= size:
-        return [items]
-    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -113,18 +109,6 @@ async def crawl_site(
             skip_seen_days=skip_seen_days,
             keyword=keyword,
         )
-
-    # ★ EMBED_ENQUEUE_CHUNK 개씩 쪼개서 여러 job 으로 넘긴다. 사람인 8페이지
-    # ★ enqueue 실패로 태스크를 죽이지 않는다. 여기서 예외를 올리면 arq 가
-    if stats.changed_posting_ids:
-        try:
-            for batch in _chunked(stats.changed_posting_ids, get_settings().embed_enqueue_chunk):
-                await ctx["redis"].enqueue_job("embed_postings", batch)
-        except Exception:
-            log.exception(
-                "embed_postings enqueue 실패 (%d건) — 05:30 백필로 넘깁니다",
-                len(stats.changed_posting_ids),
-            )
 
     elapsed = (datetime.now(UTC) - started).total_seconds()
     log.info("crawl_site 완료: %s/%s — %s (%.1fs)", site, keyword, stats.as_line(), elapsed)

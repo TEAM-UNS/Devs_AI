@@ -95,6 +95,4 @@ class WorkerSettings:
 
     cron_jobs: ClassVar[list] = [
         cron(crawl_dispatch, hour=8, minute=30, run_at_startup=True, max_tries=1),
-        cron(embed_backfill, hour=11, minute=0, max_tries=2),
-        cron(embed_companies, hour=11, minute=30, max_tries=2),
     ]

@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     embed_batch_size: int = 96
     embed_max_retry: int = 1
     embed_backfill_limit: int = 500
-    embed_enqueue_chunk: int = 0
 
     embed_rpm: int = 0
     embed_tpm: int = 0
