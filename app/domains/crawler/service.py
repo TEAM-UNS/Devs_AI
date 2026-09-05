@@ -21,8 +21,7 @@ from datetime import UTC, datetime
 
 from bs4 import BeautifulSoup
 
-from app.core import enums
-from app.core.database import session_scope
+from app.core.database import get_worker_session
 from app.domains.crawler import extractor
 from app.domains.crawler.extractor import SkillMatcher
 from app.domains.crawler.schemas import RawJob
@@ -32,7 +31,7 @@ from app.domains.crawler.sites.base import (
     ParseError,
     SelectorBrokenError,
 )
-from app.domains.market import repository
+from app.domains.market import enums, repository
 
 log = logging.getLogger(__name__)
 
@@ -44,17 +43,12 @@ class CrawlStats:
     updated: int = 0
     skipped: int = 0
     # ★ 목록 단계에서 걸러 상세 요청 자체를 하지 않은 건수 (증분 수집).
-    #   crawl_run 에는 별도 컬럼이 없으므로 skipped 에 합산하고 내역은
-    #   message 에 남긴다. 명세에 없는 컬럼을 임의로 늘리지 않는다.
     skipped_known: int = 0
-    # content_hash 는 같은데 파서가 바뀌어 다시 적재한 건수 (force_reextract).
     reextracted: int = 0
     errors: int = 0
     pages: int = 0
     total_available: int = 0
     error_messages: list[str] = field(default_factory=list)
-    # 이번 실행에서 실제로 내용이 바뀐 공고. crawl_site 가 이 목록으로만
-    # embed_postings 를 enqueue 한다 (해시가 같으면 재임베딩할 게 없다).
     changed_posting_ids: list[int] = field(default_factory=list)
 
     def as_line(self) -> str:
@@ -83,22 +77,16 @@ class ReparseStats:
 
 
 async def reparse_skills(*, source: str | None = None, limit: int | None = None) -> ReparseStats:
-    """이미 저장된 본문으로 스택과 분야를 다시 계산한다. 재수집하지 않는다.
-
-    사전이나 분류 규칙을 고친 뒤 돌린다.
-    posting_skill 을 갈아끼우고 job_posting.field_id 만 갱신한다.
-    본문·회사 등 수집 원본은 건드리지 않는다.
-    """
     stats = ReparseStats()
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
         field_ids = await repository.get_field_ids(session)
         targets = await repository.iter_postings_for_reparse(session, source=source, limit=limit)
 
     log.info("재추출 대상 %d건 (사전 %d스킬)", len(targets), len(matcher.entries))
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         for posting_id, description, tags, raw_fields, old_field_id in targets:
             try:
                 async with session.begin_nested():
@@ -109,16 +97,12 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
                         [(h.skill_id, h.requirement, h.mentions) for h in hits],
                     )
 
-                    # 분야는 수집 시점 규칙으로 굳어 있다. 규칙이 바뀌었을 수 있으니
-                    # 원본 직무분류에서 다시 계산한다.
                     tech_field = extractor.map_tech_field(raw_fields.get("job_categories") or [])
                     new_field_id = field_ids.get(tech_field.value) if tech_field else None
                     if new_field_id != old_field_id:
                         await repository.update_posting_field(session, posting_id, new_field_id)
                         stats.field_updated += 1
 
-                    # 저장된 본문이 실제로 '요강' 인지 다시 판정한다.
-                    # 길이 기준으로 통과했던 과거 행을 여기서 바로잡는다.
                     if not extractor.is_valid_body(description, matcher):
                         if await repository.mark_body_extract_failed(session, posting_id):
                             stats.body_failed += 1
@@ -136,12 +120,6 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
 
 
 async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStats:
-    """저장된 HTML 스냅샷으로 본문만 다시 뽑는다. 네트워크를 타지 않는다.
-
-    파서를 고친 뒤 재수집 없이 결과를 반영하려고 쓴다.
-    description · body_is_image · body_extract_failed 만 갱신하고
-    나머지 컬럼은 건드리지 않는다.
-    """
     stats = ReparseStats()
     paths = sorted(crawler.snapshot_dir.glob("position_*.html"))
     log.info("%s: 스냅샷 %d건에서 본문 재추출", crawler.source, len(paths))
@@ -152,7 +130,7 @@ async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStat
     if extract_body is None:
         raise RuntimeError(f"{crawler.source} 는 extract_body() 를 제공하지 않습니다.")
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         for path in paths:
             source_job_id = path.stem.removeprefix("position_")
             try:
@@ -184,8 +162,6 @@ class CrawlService:
     def __init__(self, crawler: BaseSiteCrawler, *, force_reextract: bool = False) -> None:
         self.crawler = crawler
         # ★ 파서를 고친 뒤 백필용. content_hash 가 같아도 다시 적재한다.
-        #   content_hash 는 사이트 원문으로만 계산하므로 우리 파서가 바뀐 것을
-        #   감지하지 못한다 — 그대로 두면 "재수집했는데 아무것도 안 바뀜" 이 된다.
         self.force_reextract = force_reextract
 
     async def crawl(
@@ -197,15 +173,9 @@ class CrawlService:
         skip_seen_days: int = 0,
         keyword: str | None = None,
     ) -> CrawlStats:
-        """한 사이트(+키워드) 를 pages 만큼 순회한다.
-
-        skip_seen_days > 0 이면 최근 그 기간에 이미 수집한 공고를 **목록
-        단계에서** 걸러 상세 요청을 아낀다. 상세를 받은 뒤 content_hash 를
-        비교하는 방식은 요청이 이미 나간 뒤라 절감 효과가 없다.
-        """
         stats = CrawlStats()
 
-        async with session_scope() as session:
+        async with get_worker_session() as session:
             run_id = await repository.start_run(
                 session,
                 kind=enums.RunKind.CRAWL,
@@ -213,9 +183,7 @@ class CrawlService:
                 keyword=keyword,
             )
             field_ids = await repository.get_field_ids(session)
-            # 별칭 사전은 실행당 한 번만 읽어 정규식으로 컴파일한다.
             matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
-            # 증분 수집용 기수집 id 집합. 실행당 1회만 조회한다.
             seen = await repository.recent_source_ids(
                 session, self.crawler.source, days=skip_seen_days
             )
@@ -232,7 +200,6 @@ class CrawlService:
                 try:
                     jobs, total = await self.crawler.fetch_list_page(page)
                 except ParseError as exc:
-                    # 사이트 개편. 이 사이트는 더 진행해도 의미가 없다.
                     log.error("%s: 목록 구조 변경 — 중단합니다. %s", self.crawler.source, exc)
                     stats.errors += 1
                     stats.error_messages.append(str(exc))
@@ -252,7 +219,6 @@ class CrawlService:
                 # ── 종료 조건 (명세 3-3) ──────────────────────────────────
                 if not jobs:
                     if page == start_page:
-                        # 검색 결과 없음이 아니라 파싱이 깨진 것이다.
                         raise SelectorBrokenError(self.crawler.source, keyword)
                     log.info("%s: page %d 가 비어 있어 종료합니다.", self.crawler.source, page)
                     break
@@ -279,7 +245,7 @@ class CrawlService:
                 await self._persist(fresh, field_ids, matcher, stats)
                 log.info("%s: page %d 완료 — %s", self.crawler.source, page, stats.as_line())
 
-        except Exception as exc:  # 예상 못 한 실패도 run 을 닫아야 한다
+        except Exception as exc:
             stats.errors += 1
             stats.error_messages.append(repr(exc))
             await self._close_run(run_id, stats, enums.RunStatus.FAILED)
@@ -295,7 +261,6 @@ class CrawlService:
 
     # ── 상세 ──────────────────────────────────────────────────────────────
     async def _fetch_details(self, jobs: list[RawJob], stats: CrawlStats) -> list[RawJob]:
-        """동시성 제한은 crawler 내부 세마포어가 건다."""
         results = await asyncio.gather(
             *(self.crawler.fetch_detail(job) for job in jobs), return_exceptions=True
         )
@@ -304,7 +269,7 @@ class CrawlService:
             if isinstance(result, BaseException):
                 log.warning("상세 실패 id=%s: %r", original.source_job_id, result)
                 stats.errors += 1
-                merged.append(original)  # 목록 데이터만으로 저장
+                merged.append(original)
             else:
                 merged.append(result)
         return merged
@@ -317,7 +282,7 @@ class CrawlService:
         matcher: SkillMatcher,
         stats: CrawlStats,
     ) -> None:
-        async with session_scope() as session:
+        async with get_worker_session() as session:
             known = await repository.get_content_hashes(
                 session, self.crawler.source, [j.source_job_id for j in jobs]
             )
@@ -328,33 +293,23 @@ class CrawlService:
                 old_hash = known.get(job.source_job_id)
                 unchanged = old_hash is not None and old_hash == new_hash
 
-                # 내용이 그대로면 재추출을 건너뛴다 — 단, 파서를 고친 직후에는
-                # 그러면 안 된다. content_hash 는 사이트가 준 원문으로만 계산해서
-                # 우리 파서가 바뀐 것을 모른다(employment_type 은 해시에 아예
-                # 없다). 그래서 파서 수정 후 백필은 force_reextract 로 돈다.
                 if unchanged and not self.force_reextract:
                     await repository.touch_posting(session, self.crawler.source, job.source_job_id)
                     stats.skipped += 1
                     continue
 
                 try:
-                    # SAVEPOINT. postgres 는 문 하나가 실패하면 트랜잭션 전체가
-                    # abort 되므로, 중첩 트랜잭션 없이 try/except 만 두면 이후
-                    # 모든 공고가 InFailedSqlTransaction 으로 연쇄 실패한다.
                     async with session.begin_nested():
                         posting_id = await self._save_one(
                             session, job, field_ids, matcher, new_hash
                         )
-                except Exception as exc:  # 한 건 실패가 페이지 전체를 막지 않게
+                except Exception as exc:
                     log.exception("적재 실패 id=%s", job.source_job_id)
                     stats.errors += 1
                     stats.error_messages.append(f"{job.source_job_id}: {exc!r}")
                     continue
 
                 if unchanged:
-                    # 해시는 그대로인데 파서가 바뀌어 다시 쓴 것. 본문은 그대로라
-                    # 재임베딩할 게 없으므로 changed_posting_ids 에 넣지 않는다.
-                    # (넣으면 사람인 전체가 임베딩 큐로 들어간다)
                     stats.reextracted += 1
                     continue
 
@@ -384,14 +339,12 @@ class CrawlService:
                 "source": job.source,
                 "source_job_id": job.source_job_id,
                 "company_id": company_id,
-                # 분류에 못 맞추면 NULL 로 둔다 ("기타" 버킷을 만들지 않는다)
                 "field_id": field_ids.get(tech_field.value) if tech_field else None,
                 "title": job.title[:300],
                 "company_name_raw": job.company_name[:200] or None,
                 "tags_raw": job.tech_stacks,
                 "career_min": job.career_min,
                 "career_max": job.career_max,
-                # 사람인 학력 라벨이 "대졸(2,3년제) 이상 (졸업예정자 가능)" 처럼 길다.
                 "education": (job.education or None) and job.education[:30],
                 "employment_type": (job.employment_type or None) and job.employment_type[:30],
                 "location": (job.locations[0][:120] if job.locations else None),
@@ -420,9 +373,6 @@ class CrawlService:
             },
         )
 
-        # 본문 + 사이트 태그에서 스킬 추출.
-        # 사전에 없는 태그는 버린다. 사전이 유일한 권위이고, 원본은
-        # job_posting.tags_raw 에 그대로 남아 있어 나중에 사전을 늘리면 복구된다.
         hits = matcher.extract(description=description, tags=job.tech_stacks)
         await repository.replace_posting_skills(
             session,
@@ -449,13 +399,11 @@ class CrawlService:
             industry=job.company_industry,
             employee_count=job.company_employee_count,
             revenue=job.company_revenue,
-            # 사원수를 알면 그쪽이 정확하다. 없으면 "대기업" 같은 태그로 추정한다.
             size_type=extractor.company_size(
                 employee_count=job.company_employee_count, tags=job.company_tags
             ),
         )
 
-        # 사이트 내부 기업 id 는 상세에만 있다. 없으면 원장을 남기지 않는다.
         if job.company_source_id:
             await repository.upsert_company_source(
                 session,
@@ -468,13 +416,10 @@ class CrawlService:
 
     # ── 이력 ──────────────────────────────────────────────────────────────
     async def _close_run(self, run_id: int, stats: CrawlStats, status: enums.RunStatus) -> None:
-        # skipped 는 "해시 동일" 과 "목록에서 걸러 상세를 안 받음" 두 가지가
-        # 섞인 값이다. 내역을 message 에 남겨 둬야 나중에 증분 효과를 읽을 수
-        # 있다 (crawl_run 에 컬럼을 늘리지 않는다).
         notes = [f"skipped_known={stats.skipped_known}"] if stats.skipped_known else []
         notes += stats.error_messages[:5]
 
-        async with session_scope() as session:
+        async with get_worker_session() as session:
             await repository.finish_run(
                 session,
                 run_id,

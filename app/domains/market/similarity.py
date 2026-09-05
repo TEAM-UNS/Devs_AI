@@ -7,6 +7,5 @@
     규모 근접     employee_count 로그 스케일 거리 → 0~1
                   employee_count 가 없으면 size_type 구간 거리로 대체
 
-가중치는 core/enums.py 의 SIMILARITY_WEIGHTS 에서 가져온다 (R5).
 반환에 공통 스킬 목록을 함께 실어 LLM 이 근거를 설명할 수 있게 한다.
 """

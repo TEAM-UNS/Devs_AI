@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.core.enums import TechField
+from app.domains.market.enums import TechField
 
 
 @dataclass(frozen=True)
@@ -51,14 +51,9 @@ class SkillSeed:
     aliases: tuple[str, ...] = field(default_factory=tuple)
     is_ambiguous: bool = False
     is_common: bool = False
-    # 대소문자를 구분해 매칭할 별칭. 정규 표기도 여기 넣을 수 있다.
     cs_aliases: tuple[str, ...] = field(default_factory=tuple)
 
     def all_aliases(self) -> list[str]:
-        """정규 표기를 포함한 소문자 별칭 목록 (중복 제거).
-
-        cs_aliases 로 지정된 표기는 대소문자를 구분해야 하므로 여기서 뺀다.
-        """
         excluded = {a.lower() for a in self.cs_aliases}
         seen: dict[str, None] = {}
         for alias in (self.name, *self.aliases):
@@ -68,7 +63,6 @@ class SkillSeed:
         return list(seen)
 
     def all_cs_aliases(self) -> list[str]:
-        """대소문자를 구분해 매칭할 별칭 (원래 표기 그대로)."""
         seen: dict[str, None] = {}
         for alias in self.cs_aliases:
             if alias.strip():
@@ -106,7 +100,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Spring Boot", "framework", (_B,), ("스프링부트", "스프링 부트", "springboot")),
     SkillSeed("Spring Framework", "framework", (_B,), ("스프링", "spring", "스프링 프레임워크")),
     SkillSeed("JPA", "library", (_B,), ("hibernate", "하이버네이트", "spring data jpa")),
-    # "node" 단독은 넣지 않는다. k8s 문맥의 "node 간 통신" 이 오탐된다.
     SkillSeed("Node.js", "runtime", (_B,), ("nodejs", "노드js", "노드제이에스")),
     SkillSeed("NestJS", "framework", (_B,), ("nest.js", "네스트js")),
     SkillSeed("Express", "framework", (_B,), ("express.js", "expressjs", "익스프레스")),
@@ -139,7 +132,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Kafka", "infra", (_B, _D), ("카프카", "apache kafka")),
     SkillSeed("GraphQL", "protocol", (_B, _F), ("그래프ql",)),
     SkillSeed("gRPC", "protocol", (_B,), ("grpc",)),
-    # "rest" 단독은 영어 문장에서 흔해 넣지 않는다.
     SkillSeed("REST API", "protocol", (_B, _F), ("restful", "restful api", "레스트api")),
     # ══ frontend ═════════════════════════════════════════════════════════
     SkillSeed("JavaScript", "language", (_F, _B), ("자바스크립트", "js", "es6", "ecmascript")),
@@ -158,7 +150,7 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Redux", "library", (_F,), ("리덕스", "redux toolkit")),
     SkillSeed("Zustand", "library", (_F,), ("주스탠드",)),
     SkillSeed("Webpack", "tool", (_F,), ("웹팩",)),
-    SkillSeed("Vite", "tool", (_F,), ("비테",)),  # "비트" 는 비트코인 등과 겹친다
+    SkillSeed("Vite", "tool", (_F,), ("비테",)),
     SkillSeed("jQuery", "library", (_F,), ("제이쿼리",)),
     SkillSeed("Storybook", "tool", (_F,), ("스토리북",)),
     # ══ mobile ═══════════════════════════════════════════════════════════
@@ -167,7 +159,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Objective-C", "language", (_M,), ("objective c", "objc", "오브젝티브c")),
     SkillSeed("Android", "platform", (_M,), ("안드로이드", "android sdk")),
     SkillSeed("iOS", "platform", (_M,), ("아이오에스",)),
-    # "compose" 단독은 docker compose 와 겹친다.
     SkillSeed("Jetpack Compose", "framework", (_M,), ("컴포즈",)),
     SkillSeed("React Native", "framework", (_M, _F), ("리액트네이티브", "rn")),
     SkillSeed("Flutter", "framework", (_M,), ("플러터",)),
@@ -193,9 +184,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Hugging Face", "platform", (_D,), ("허깅페이스", "huggingface", "transformers")),
     SkillSeed("OpenCV", "library", (_D, _E), ("오픈시브이", "open cv")),
     SkillSeed("MLflow", "tool", (_D,), ("ml flow", "엠엘플로우")),
-    # 사이트가 "AI/인공지능" 같은 분야명을 태그로 주는 경우가 많다.
-    # 단독 "AI" 는 별칭에 넣지 않는다 — "AI추천공고", "AI면접" 같은 사이트 UI 문구에
-    # 걸려 오탐이 난다(진단에서 실제로 확인). 한글 표기만으로도 충분히 잡힌다.
     SkillSeed(
         "AI/ML",
         "domain",
@@ -205,7 +193,7 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Tableau", "tool", (_D,), ("태블로",)),
     SkillSeed("dbt", "tool", (_D,), ("data build tool",)),
     # ══ devops ═══════════════════════════════════════════════════════════
-    SkillSeed("Docker", "infra", (_O, _B), ("도커",)),  # "컨테이너" 는 너무 일반적
+    SkillSeed("Docker", "infra", (_O, _B), ("도커",)),
     SkillSeed("Kubernetes", "infra", (_O,), ("쿠버네티스", "k8s", "쿠버")),
     SkillSeed("AWS", "cloud", (_O, _B), ("아마존 웹서비스", "amazon web services")),
     SkillSeed("GCP", "cloud", (_O,), ("google cloud", "구글 클라우드")),
@@ -263,10 +251,8 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("STM32", "hardware", (_E,), ("stm 32",)),
     SkillSeed("Arduino", "hardware", (_E,), ("아두이노",)),
     SkillSeed("MCU", "hardware", (_E,), ("마이크로컨트롤러", "micro controller")),
-    # 소문자 "qt" 는 드물지만 영문 약어와 겹칠 수 있어 대문자 표기만 잡는다.
     SkillSeed("Qt", "framework", (_E, _G), ("큐티 프레임워크",), cs_aliases=("Qt", "QT")),
     SkillSeed("Raspberry Pi", "hardware", (_E,), ("라즈베리파이", "라즈베리 파이")),
-    # 이름이 영어 조동사 "can" 과 같다. 대소문자 구분 + 문맥 검사 이중으로 막는다.
     SkillSeed(
         "CAN",
         "protocol",
@@ -282,9 +268,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("펌웨어", "domain", (_E,), ("firmware", "펌웨어 개발")),
     SkillSeed("I2C", "protocol", (_E,), ("i2c 통신", "spi")),
     # ══ 공통 도구 (is_common — 트렌드 집계에서 기본 제외) ═════════════════
-    # 전 직군이 다 쓰므로 "요즘 뜨는 기술" 목록 상위를 의미 없이 차지한다.
-    # 다만 기업 프로필에서는 협업 환경 정보로 유효해서 지우지는 않는다.
-    # "깃" 단독은 깃발·깃들다 등과 겹쳐 넣지 않는다.
     SkillSeed(
         "Git",
         "tool",
@@ -296,14 +279,11 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Slack", "tool", (_B, _F, _M, _D, _O), ("슬랙",), is_common=True),
     SkillSeed("Notion", "tool", (_B, _F, _M, _D, _O), ("노션",), is_common=True),
     SkillSeed("Confluence", "tool", (_B, _F, _M), ("컨플루언스",), is_common=True),
-    # Figma · Linux 는 일부러 is_common 이 아니다. 디자인 협업·인프라라는
-    # 직군 신호가 실제로 있어서 트렌드에서 빼면 정보가 사라진다.
     SkillSeed("Figma", "tool", (_F, _M), ("피그마",)),
 )
 
 
 def catalog_stats() -> dict[str, int]:
-    """분야별 스킬 수. 시드 스크립트가 출력한다."""
     counts: dict[str, int] = {f.code: 0 for f in FIELD_CATALOG}
     for skill in SKILL_CATALOG:
         for tech_field in skill.fields:

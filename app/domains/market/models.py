@@ -14,7 +14,7 @@ DDL 원본은 루트 init.sql. 이 파일은 그와 1:1로 대응해야 한다.
 
 규칙
     - 이 모듈은 다른 도메인을 import 하지 않는다 (R1)
-    - CHECK 제약 문자열은 core/enums.py 에서 생성한다. Enum 이 곧 DDL 이다
+    - CHECK 제약 문자열은 enums.py + core.database.sql_in 으로 생성한다
     - HNSW · 부분 · GIN 인덱스는 __table_args__ 에 명시한다
     - updated_at 갱신은 DB 트리거(public.touch_updated_at)가 담당한다
     - ★ `from __future__ import annotations` 를 쓰지 않는다.
@@ -41,20 +41,17 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.core import enums
-from app.core.enums import EMBEDDING_DIM
+from app.core.config import get_settings
+from app.domains.market import enums
+from app.domains.market.enums import sql_in
 
 SCHEMA = "market"
 
-# 벡터 인덱스 파라미터. 수집량이 크게 늘면 재조정 + REINDEX 를 검토한다.
+EMBED_DIM = get_settings().embed_dim
+
 _HNSW = {"m": 16, "ef_construction": 64}
 
 # ★ Enum 컬럼은 반드시 sa_type=String(n) 으로 고정한다.
-#   그냥 두면 SQLModel 이 네이티브 PG ENUM 타입을 만들어 버린다. 그러면
-#   (1) init.sql 의 varchar + CHECK 와 어긋나고
-#   (2) 값을 하나 추가할 때마다 ALTER TYPE 마이그레이션이 필요해진다.
-#   값 검증은 CHECK 제약(enums.sql_in)이 담당한다.
-#   같은 이유로 긴 본문은 sa_type=Text 로 고정한다(기본값은 VARCHAR).
 
 
 def _created_at() -> Column:
@@ -62,16 +59,12 @@ def _created_at() -> Column:
 
 
 def _updated_at() -> Column:
-    # 갱신은 트리거가 한다. 여기서는 생성 시각만 채운다.
     return Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  분류 체계
 # ═══════════════════════════════════════════════════════════════════════════
 class TechField(SQLModel, table=True):
-    """기술 분야. code 는 enums.TechField 와 1:1."""
-
     __tablename__ = "tech_field"
     __table_args__ = {"schema": SCHEMA}
 
@@ -85,12 +78,11 @@ class TechField(SQLModel, table=True):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  기업
 # ═══════════════════════════════════════════════════════════════════════════
 class Company(SQLModel, table=True):
     __tablename__ = "company"
     __table_args__ = (
-        CheckConstraint(enums.sql_in("size_type", enums.CompanySize), name="company_size_type_chk"),
+        CheckConstraint(sql_in("size_type", enums.CompanySize), name="company_size_type_chk"),
         CheckConstraint(
             "employee_count IS NULL OR employee_count >= 0",
             name="company_employee_count_chk",
@@ -102,7 +94,6 @@ class Company(SQLModel, table=True):
             postgresql_ops={"name": "gin_trgm_ops"},
         ),
         Index("company_size_type_idx", "size_type"),
-        # 프로필 임베딩 미완료분 백필용
         Index(
             "company_embed_todo_idx",
             "id",
@@ -120,13 +111,12 @@ class Company(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True, sa_type=BigInteger)
 
-    # 괄호 · "주식회사" · 공백을 제거한 정규화 이름. 사이트 간 통합의 기준.
     name_key: str = Field(max_length=200, unique=True)
     name: str = Field(max_length=200)
 
-    description: str | None = Field(default=None, sa_type=Text)  # 기업 소개
-    business_content: str | None = Field(default=None, sa_type=Text)  # 사업 내용
-    talent_profile: str | None = Field(default=None, sa_type=Text)  # 인재상
+    description: str | None = Field(default=None, sa_type=Text)
+    business_content: str | None = Field(default=None, sa_type=Text)
+    talent_profile: str | None = Field(default=None, sa_type=Text)
 
     size_type: enums.CompanySize = Field(
         default=enums.CompanySize.UNKNOWN,
@@ -135,13 +125,12 @@ class Company(SQLModel, table=True):
     )
     employee_count: int | None = None
     industry: str | None = Field(default=None, max_length=120)
-    founded: str | None = Field(default=None, max_length=20)  # 표기가 제각각이라 문자열
-    revenue: int | None = Field(default=None, sa_type=BigInteger)  # 원 단위
+    founded: str | None = Field(default=None, max_length=20)
+    revenue: int | None = Field(default=None, sa_type=BigInteger)
     homepage: str | None = Field(default=None, max_length=500)
 
-    # description + business_content + industry 를 합쳐 임베딩
     profile_embedding: list[float] | None = Field(
-        default=None, sa_column=Column(Vector(EMBEDDING_DIM))
+        default=None, sa_column=Column(Vector(EMBED_DIM))
     )
     embed_hash: str | None = Field(default=None, sa_column=Column(CHAR(64)))
 
@@ -157,12 +146,10 @@ class Company(SQLModel, table=True):
 
 
 class CompanySource(SQLModel, table=True):
-    """같은 기업이 사이트마다 갖는 다른 식별자. 오병합 추적용 원장."""
-
     __tablename__ = "company_source"
     __table_args__ = (
         CheckConstraint(
-            enums.sql_in("source", enums.CrawlSource), name="company_source_source_chk"
+            sql_in("source", enums.CrawlSource), name="company_source_source_chk"
         ),
         UniqueConstraint("source", "source_company_id", name="company_source_uk"),
         Index("company_source_company_idx", "company_id"),
@@ -182,18 +169,17 @@ class CompanySource(SQLModel, table=True):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  공고
 # ═══════════════════════════════════════════════════════════════════════════
 class JobPosting(SQLModel, table=True):
     __tablename__ = "job_posting"
     __table_args__ = (
-        CheckConstraint(enums.sql_in("source", enums.CrawlSource), name="job_posting_source_chk"),
+        CheckConstraint(sql_in("source", enums.CrawlSource), name="job_posting_source_chk"),
         CheckConstraint(
-            enums.sql_in("salary_type", enums.SalaryType),
+            sql_in("salary_type", enums.SalaryType),
             name="job_posting_salary_type_chk",
         ),
         CheckConstraint(
-            f"salary_period IS NULL OR {enums.sql_in('salary_period', enums.SalaryPeriod)}",
+            f"salary_period IS NULL OR {sql_in('salary_period', enums.SalaryPeriod)}",
             name="job_posting_salary_period_chk",
         ),
         CheckConstraint(
@@ -211,7 +197,6 @@ class JobPosting(SQLModel, table=True):
         Index("job_posting_collected_idx", text("collected_at DESC")),
         Index("job_posting_career_idx", "career_min", "career_max"),
         Index("job_posting_location_idx", "location"),
-        # 연봉 통계 대상(금액 공개 공고)만 좁게 태우는 부분 인덱스
         Index(
             "job_posting_salary_idx",
             "field_id",
@@ -219,7 +204,6 @@ class JobPosting(SQLModel, table=True):
             "salary_max",
             postgresql_where=text("salary_type IN ('range', 'min_only', 'max_only')"),
         ),
-        # embed_backfill 대상 스캔용
         Index(
             "job_posting_embed_todo_idx",
             "id",
@@ -250,29 +234,23 @@ class JobPosting(SQLModel, table=True):
     title: str = Field(max_length=300)
 
     # ── 정규화 전 원본 ──────────────────────────────────────────────────
-    # company_id 는 name_key 병합 결과라 오병합 가능성이 있다. 사이트가 준
-    # 회사명 문자열을 그대로 남겨 사후 추적할 수 있게 한다.
     company_name_raw: str | None = Field(default=None, max_length=200)
-    # 사이트가 제공한 스택 태그 원본 (점핏 techStacks 등).
-    # 정규화·등급 부여는 posting_skill 이 담당하고, 여기는 손대지 않는다.
     tags_raw: list[str] = Field(
         default_factory=list,
         sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     )
 
-    career_min: int | None = None  # 신입 = 0, 무관 = None
+    career_min: int | None = None
     career_max: int | None = None
     employment_type: str | None = Field(default=None, max_length=30)
     education: str | None = Field(default=None, max_length=30)
     location: str | None = Field(default=None, max_length=120)
 
-    # 요강 전문. 3중 폴백 전부 실패 시 None
     description: str | None = Field(default=None, sa_type=Text)
     welfare: str | None = Field(default=None, sa_type=Text)
 
     salary_raw: str | None = Field(default=None, sa_type=Text)
     # ★ 항상 "연봉 만원" 단위다. 월급 표기는 ×12 해서 저장한다.
-    #   원문 기준은 salary_period 에 따로 남긴다.
     salary_min: int | None = None
     salary_max: int | None = None
     salary_type: enums.SalaryType = Field(
@@ -280,15 +258,9 @@ class JobPosting(SQLModel, table=True):
         sa_type=String(16),
         sa_column_kwargs={"server_default": text("'unknown'")},
     )
-    # annual · monthly · hourly. 알 수 없거나 negotiable 이면 NULL.
-    # hourly 는 근무시간을 몰라 연환산이 불가능하므로 통계에서 제외한다.
     salary_period: enums.SalaryPeriod | None = Field(default=None, sa_type=String(8))
 
-    # 본문이 이미지 한 장인 공고. 집계·임베딩 대상에서 제외한다.
     body_is_image: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
-    # 본문 추출 실패 (파서가 네비게이션·안내문만 건졌거나 사이트가 본문을 안 내려줌).
-    # body_is_image 와 구분한다 — 저건 원래 텍스트가 없는 공고,
-    # 이건 우리가 못 가져온 것이라 나중에 재시도 대상을 고를 때 구분이 필요하다.
     body_extract_failed: bool = Field(
         default=False, sa_column_kwargs={"server_default": text("false")}
     )
@@ -313,23 +285,17 @@ class JobPosting(SQLModel, table=True):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  스킬
 # ═══════════════════════════════════════════════════════════════════════════
 class Skill(SQLModel, table=True):
     __tablename__ = "skill"
     __table_args__ = {"schema": SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(max_length=80, unique=True)  # 정규화 표기 ("Spring Boot")
+    name: str = Field(max_length=80, unique=True)
     category: str | None = Field(default=None, max_length=32)
-    # Go · C · R — 문맥 단서 없으면 미채택
     is_ambiguous: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
-    # Git · Jira · Slack 처럼 전 직군 공통 도구. 트렌드 집계에서 기본 제외한다
-    # (신호가 아니라 배경 소음이라 상위권을 의미 없이 차지한다).
-    # get_company_profile 은 협업 환경 정보로 유용하므로 포함한다.
     is_common: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
-    # name + aliases. 200행 규모라 앱 시작 시 메모리로 로드한다(인덱스 없음).
-    embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(EMBEDDING_DIM)))
+    embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(EMBED_DIM)))
     created_at: datetime | None = Field(default=None, sa_column=_created_at())
     updated_at: datetime | None = Field(default=None, sa_column=_updated_at())
 
@@ -337,8 +303,6 @@ class Skill(SQLModel, table=True):
 
 
 class SkillAlias(SQLModel, table=True):
-    """본문 매칭용 표기 변형. alias 는 소문자·공백제거 정규화 후 저장한다."""
-
     __tablename__ = "skill_alias"
     __table_args__ = (
         Index("skill_alias_skill_idx", "skill_id"),
@@ -348,17 +312,12 @@ class SkillAlias(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     skill_id: int = Field(foreign_key=f"{SCHEMA}.skill.id", ondelete="CASCADE")
     alias: str = Field(max_length=120, unique=True)
-    # 대소문자를 구분해 매칭한다. "CAN"(차량 버스)이 영어 문장의 "can" 에,
-    # "ES"(Elasticsearch)가 "es" 에 걸리는 것을 원천 차단한다.
-    # 문맥 게이트에만 의존하면 영문 공고가 많은 사이트에서 뚫린다.
     case_sensitive: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
 
     skill: Skill | None = Relationship(back_populates="aliases")
 
 
 class SkillField(SQLModel, table=True):
-    """스킬 ↔ 분야 다대다 (Kotlin 은 backend + android)."""
-
     __tablename__ = "skill_field"
     __table_args__ = (
         Index("skill_field_field_idx", "field_id"),
@@ -372,15 +331,12 @@ class SkillField(SQLModel, table=True):
 
 
 class PostingSkill(SQLModel, table=True):
-    """공고 ↔ 스킬. 트렌드 · 동시출현 · 갭분석의 기반 테이블."""
-
     __tablename__ = "posting_skill"
     __table_args__ = (
         CheckConstraint(
-            enums.sql_in("requirement", enums.Requirement),
+            sql_in("requirement", enums.Requirement),
             name="posting_skill_requirement_chk",
         ),
-        # 스킬 기준 역방향 조회 (get_popular_skills · get_skill_demand)
         Index("posting_skill_skill_idx", "skill_id", "requirement"),
         {"schema": SCHEMA},
     )
@@ -399,13 +355,12 @@ class PostingSkill(SQLModel, table=True):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  임베딩 청크
 # ═══════════════════════════════════════════════════════════════════════════
 class PostingChunk(SQLModel, table=True):
     __tablename__ = "posting_chunk"
     __table_args__ = (
         CheckConstraint(
-            enums.sql_in("section", enums.ChunkSection),
+            sql_in("section", enums.ChunkSection),
             name="posting_chunk_section_chk",
         ),
         UniqueConstraint("posting_id", "section", "seq", name="posting_chunk_uk"),
@@ -429,8 +384,8 @@ class PostingChunk(SQLModel, table=True):
     section: enums.ChunkSection = Field(sa_type=String(20))
     seq: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     content: str = Field(sa_type=Text)
-    chunk_hash: str = Field(sa_column=Column(CHAR(64), nullable=False))  # 변경분만 재임베딩
-    embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(EMBEDDING_DIM)))
+    chunk_hash: str = Field(sa_column=Column(CHAR(64), nullable=False))
+    embedding: list[float] | None = Field(default=None, sa_column=Column(Vector(EMBED_DIM)))
     token_count: int | None = None
     created_at: datetime | None = Field(default=None, sa_column=_created_at())
 
@@ -438,15 +393,13 @@ class PostingChunk(SQLModel, table=True):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  실행 이력
 # ═══════════════════════════════════════════════════════════════════════════
 class CrawlRun(SQLModel, table=True):
     __tablename__ = "crawl_run"
     __table_args__ = (
-        CheckConstraint(enums.sql_in("kind", enums.RunKind), name="crawl_run_kind_chk"),
-        CheckConstraint(enums.sql_in("status", enums.RunStatus), name="crawl_run_status_chk"),
+        CheckConstraint(sql_in("kind", enums.RunKind), name="crawl_run_kind_chk"),
+        CheckConstraint(sql_in("status", enums.RunStatus), name="crawl_run_status_chk"),
         Index("crawl_run_kind_started_idx", "kind", text("started_at DESC")),
-        # get_data_coverage 의 "최종 수집시각" 조회용
         Index("crawl_run_source_started_idx", "source", text("started_at DESC")),
         {"schema": SCHEMA},
     )
@@ -468,6 +421,6 @@ class CrawlRun(SQLModel, table=True):
     embedded: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     errors: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
 
-    message: str | None = Field(default=None, sa_type=Text)  # 실패 사유 · 마지막 예외
+    message: str | None = Field(default=None, sa_type=Text)
     started_at: datetime | None = Field(default=None, sa_column=_created_at())
     finished_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))

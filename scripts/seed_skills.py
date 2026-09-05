@@ -14,11 +14,9 @@ import asyncio
 import sys
 from collections import defaultdict
 
-from app.core.database import dispose_engines, ensure_selector_event_loop_policy, session_scope
+from app.core.database import close_engine, get_worker_session
 from app.domains.market import repository
 from app.domains.market.seed_data import FIELD_CATALOG, SKILL_CATALOG, catalog_stats
-
-ensure_selector_event_loop_policy()
 
 
 def find_alias_collisions() -> dict[str, list[str]]:
@@ -77,7 +75,7 @@ async def prune() -> int:
 
     from app.domains.market.models import Skill
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         # sqlalchemy 의 select 는 Row 를 돌려준다 (sqlmodel.select 와 다르다)
         rows = (await session.exec(select(Skill.name).where(Skill.category.is_(None)))).all()
         names = sorted(row[0] for row in rows)
@@ -88,7 +86,7 @@ async def prune() -> int:
         print("  " + ", ".join(names[:25]) + (" …" if len(names) > 25 else ""))
         await session.exec(delete(Skill).where(Skill.category.is_(None)))
 
-    await dispose_engines()
+    await close_engine()
     return 0
 
 
@@ -97,7 +95,7 @@ async def seed() -> int:
         print("\n충돌을 먼저 해결하세요. 적재하지 않았습니다.")
         return code
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         field_ids = await repository.upsert_tech_fields(
             session, [(f.code, f.name, f.sort_order) for f in FIELD_CATALOG]
         )
@@ -126,7 +124,7 @@ async def seed() -> int:
     print(
         f"\n적재 완료: 분야 {len(field_ids)}개 · 스킬 {len(SKILL_CATALOG)}개 · 별칭 {alias_total}개"
     )
-    await dispose_engines()
+    await close_engine()
     return 0
 
 

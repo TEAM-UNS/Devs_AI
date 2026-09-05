@@ -46,7 +46,6 @@ DETAIL_URL = f"{BASE}/Recruit/GI_Read/{{job_id}}"
 
 KST = timezone(timedelta(hours=9))
 
-# 봇 탐지 대응. 사람인보다 훨씬 보수적으로 간다.
 DELAY_SECONDS = 2.5
 CONCURRENCY = 1
 
@@ -73,7 +72,6 @@ def _job_id(href: str | None) -> str | None:
 
 
 def _parse_date(value: Any) -> datetime | None:
-    """ "2026-07-29" · "2026-08-28T23:59" 둘 다 받는다."""
     text = hu.jsonld_text(value)
     if not text:
         return None
@@ -85,12 +83,6 @@ def _parse_date(value: Any) -> datetime | None:
 
 
 def salary_text_from_jsonld(base_salary: Any) -> str | None:
-    """schema.org MonetaryAmount → 사람이 읽는 급여 문자열.
-
-    잡코리아는 급여를 숫자로 준다: {value: 36000000, unitText: "YEAR"}.
-    이걸 "3,600만원" 같은 문자열로 바꿔서 **공용 파서**에 넘긴다.
-    사이트마다 따로 정규화하면 규칙이 갈라지므로 파서는 하나만 둔다.
-    """
     if not isinstance(base_salary, dict):
         return None
     value = base_salary.get("value")
@@ -100,7 +92,7 @@ def salary_text_from_jsonld(base_salary: Any) -> str | None:
     if not isinstance(amount, (int, float)) or amount <= 0:
         return None
     if (base_salary.get("currency") or "KRW").upper() != "KRW":
-        return None  # 외화는 공용 파서가 unknown 으로 처리한다
+        return None
 
     man_won = int(amount) // _WON_PER_MAN
     if man_won <= 0:
@@ -164,11 +156,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
 
     @staticmethod
     def _company_near(link: Tag) -> str:
-        """링크 주변 블록에서 회사명을 찾는다.
-
-        클래스명이 의미 없으므로 "공고 링크를 감싼 블록 안에서, 제목이 아닌
-        첫 번째 짧은 텍스트" 를 회사명으로 본다. 회사 링크가 있으면 그쪽이 우선.
-        """
         block: Tag | None = link
         for _ in range(5):
             if block is None or block.parent is None:
@@ -194,7 +181,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
     def merge_detail(self, job: RawJob, soup: BeautifulSoup) -> RawJob:
         update: dict[str, Any] = {"detail_fetched": True}
 
-        # 1순위 — JSON-LD. 잡코리아는 이게 잘 갖춰져 있다.
         posting = hu.jobposting_from_jsonld(soup)
         if posting is None:
             log.warning("잡코리아 JSON-LD 없음 id=%s — 본문만 수집합니다", job.source_job_id)
@@ -223,7 +209,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
                 ],
             }
 
-        # 본문 — JSON-LD 의 description 은 SEO 자동 생성문이라 쓰지 않는다.
         update |= self.extract_body(soup)
 
         clean = {k: v for k, v in update.items() if v not in (None, "", [])}
@@ -234,17 +219,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
 
     @staticmethod
     def extract_body(soup: BeautifulSoup) -> dict[str, Any]:
-        """상세요강 본문을 찾는다.
-
-        진단(103건 전수) 결과 반영
-            - iframe 0건. 본문이 iframe 에 있다는 가정은 틀렸다.
-            - largest_text_block() 은 합격자소서 후기·네비게이션을 잡았다.
-              그래서 섹션 앵커 방식으로 바꾼다.
-            - 그래도 상당수는 본문 자체가 응답에 없다. 그 경우
-              body_extract_failed=true 로 표시하고 넘어간다.
-        """
-        # 입력 soup 을 건드리지 않는다. decompose 는 파괴적이라
-        # 호출부가 나중에 JSON-LD 를 다시 읽으면 사라져 있다 (실제로 겪었다).
         soup = hu.strip_boilerplate(copy.copy(soup))
 
         node = soup.select_one(SELECTORS["body_fallback"])

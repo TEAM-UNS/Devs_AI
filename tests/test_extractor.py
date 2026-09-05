@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.enums import Requirement, SalaryPeriod, SalaryType, TechField
 from app.domains.crawler.extractor import (
     Grade,
     Section,
@@ -18,6 +17,7 @@ from app.domains.crawler.extractor import (
     parse_salary,
     split_sections,
 )
+from app.domains.market.enums import Requirement, SalaryPeriod, SalaryType, TechField
 from app.domains.market.seed_data import SKILL_CATALOG
 
 matcher = SkillMatcher.from_catalog()

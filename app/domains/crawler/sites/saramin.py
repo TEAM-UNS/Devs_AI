@@ -53,7 +53,7 @@ SELECTORS = {
     "title_link": ".job_tit a",
     "company": ".corp_name a",
     "sector": ".job_sector",
-    "sector_noise": ".job_day",  # "수정일 26/07/21" — 직무 키워드가 아니다
+    "sector_noise": ".job_day",
     "deadline": ".job_date .date",
     "body": ".user_content",
 }
@@ -69,10 +69,6 @@ def _rec_idx(href: str | None) -> str | None:
 
 
 def _parse_deadline(text: str | None) -> datetime | None:
-    """ "~ 09/20(일)" → 올해 기준 마감일. 연도가 없어서 추정해야 한다.
-
-    이미 지난 월/일이면 내년으로 본다 (12월에 "01/15" 공고가 흔하다).
-    """
     if not text:
         return None
     match = _DEADLINE.search(text)
@@ -91,7 +87,6 @@ def _parse_deadline(text: str | None) -> datetime | None:
 
 
 def _parse_datetime(text: str | None) -> datetime | None:
-    """ "2026.08.21 23:59" → datetime(KST)."""
     if not text:
         return None
     match = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", text)
@@ -118,7 +113,6 @@ class SaraminCrawler(BaseSiteCrawler):
     def default_headers(self) -> dict[str, str]:
         headers = super().default_headers()
         headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        # view-ajax 는 XHR 로만 정상 응답한다.
         headers["X-Requested-With"] = "XMLHttpRequest"
         return headers
 
@@ -139,8 +133,6 @@ class SaraminCrawler(BaseSiteCrawler):
     def parse_list(self, soup: BeautifulSoup, page: int) -> tuple[list[RawJob], int]:
         items = soup.select(SELECTORS["item"])
         if not items:
-            # 검색 결과가 0건인 게 아니라 셀렉터가 깨진 것으로 본다.
-            # 사람인 IT 검색이 진짜로 0건일 수는 없다.
             raise ParseError(
                 f"사람인 목록에서 {SELECTORS['item']} 를 찾지 못했습니다 (page={page}). "
                 "사이트 개편일 가능성이 큽니다. data/raw/saramin/ 의 스냅샷을 확인하세요."
@@ -162,7 +154,6 @@ class SaraminCrawler(BaseSiteCrawler):
         return jobs, total
 
     def _parse_total(self, soup: BeautifulSoup) -> int:
-        """ "총 2,671건" 에서 전체 건수. 못 찾으면 0 (진행에 지장 없음)."""
         text = soup.title.get_text() if soup.title else ""
         match = re.search(r"총\s*([\d,]+)\s*건", text)
         return int(match.group(1).replace(",", "")) if match else 0
@@ -173,12 +164,10 @@ class SaraminCrawler(BaseSiteCrawler):
         if not rec_idx:
             return None
 
-        # title 속성이 본문 텍스트보다 깨끗하다 (줄바꿈·하이라이트 태그 없음)
         title = (link.get("title") or link.get_text(" ", strip=True)).strip()
         company_node = item.select_one(SELECTORS["company"])
         company = company_node.get_text(" ", strip=True) if company_node else ""
 
-        # 직무 키워드. "수정일 …" 은 같은 블록에 있지만 키워드가 아니라 떼어낸다.
         sector = item.select_one(SELECTORS["sector"])
         keywords: list[str] = []
         if sector:
@@ -235,11 +224,9 @@ class SaraminCrawler(BaseSiteCrawler):
     ) -> RawJob:
         update: dict[str, Any] = {"detail_fetched": True}
 
-        # 1순위 — JSON-LD (현재 사람인엔 없지만 생기면 자동으로 쓰인다)
         if posting := hu.jobposting_from_jsonld(condition):
             update |= self._from_jsonld(posting)
 
-        # 2순위 — 라벨-값
         pairs = hu.label_value_pairs(condition)
         career_min, career_max = hu.parse_career(hu.pick(pairs, "career"))
         company_types = [
@@ -266,21 +253,17 @@ class SaraminCrawler(BaseSiteCrawler):
             "company_url": hu.pick(pairs, "homepage"),
         }
 
-        # 3순위 — 회사명은 라벨이 없다. 셀렉터로만 얻는다.
         company_node = condition.select_one("a[href*='company-info'], .company_nm, .corp_name")
         if company_node and (name := company_node.get_text(" ", strip=True)):
             update["company_name"] = name
 
-        # 사이트 내부 기업 id(csn). name_key 병합이 틀렸을 때 추적할 유일한 근거다.
         if csn := self._company_csn(condition):
             update["company_source_id"] = csn
 
-        # 본문 — iframe 안. br 을 살려야 섹션 헤더가 보존된다.
         if body is not None:
             body = hu.strip_boilerplate(copy.copy(body))
             node = body.select_one(SELECTORS["body"]) or body.body
             text = hu.block_text(node)
-            # 길이가 아니라 내용으로 판정한다 (extractor.is_valid_body).
             is_image, failed, images = hu.classify_body(
                 node, text, is_valid=extractor.is_valid_body(text)
             )
@@ -291,21 +274,14 @@ class SaraminCrawler(BaseSiteCrawler):
                 "image_urls": images,
             }
 
-        # None 으로 기존 값을 지우지 않는다 (목록에서 얻은 값이 더 나을 수 있다)
         clean = {k: v for k, v in update.items() if v not in (None, "", [])}
         clean["detail_fetched"] = True
-        # False 도 의미 있는 값이라 위 필터에서 걸러지지 않게 다시 넣는다.
         clean["body_is_image"] = update.get("body_is_image", False)
         clean["body_extract_failed"] = update.get("body_extract_failed", body is None)
         return job.merged(clean)
 
     @staticmethod
     def _company_csn(soup: BeautifulSoup) -> str | None:
-        """company-info 링크의 csn(기업 일련번호)을 뽑는다.
-
-        /zf_user/company-info/view?csn=xxxx 형태. csn 이 없는 링크
-        (sri-certification?seq=..) 도 있으므로 csn 만 골라낸다.
-        """
         for anchor in soup.select("a[href*='company-info']"):
             if match := _CSN.search(anchor.get("href") or ""):
                 return match.group(1)
@@ -313,7 +289,6 @@ class SaraminCrawler(BaseSiteCrawler):
 
     @staticmethod
     def _from_jsonld(posting: dict[str, Any]) -> dict[str, Any]:
-        """schema.org JobPosting → RawJob 필드."""
         org = posting.get("hiringOrganization") or {}
         return {
             key: value

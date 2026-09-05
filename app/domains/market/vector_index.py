@@ -23,8 +23,6 @@ HNSW_EF_CONSTRUCTION = 64
 
 _WITH = f"WITH (m = {HNSW_M}, ef_construction = {HNSW_EF_CONSTRUCTION})"
 
-# (인덱스 이름, CREATE DDL). 이름은 models.py 의 Index 정의와 같아야
-# autogenerate 가 매번 재생성을 제안하지 않는다.
 INDEXES: tuple[tuple[str, str], ...] = (
     (
         "posting_chunk_embedding_idx",
@@ -47,13 +45,4 @@ DROP_STATEMENTS: tuple[str, ...] = tuple(
 )
 
 # ★ 인덱스 생성 전에 이 세션 설정을 먼저 건다.
-#
-# 병렬 빌드는 maintenance_work_mem 을 워커끼리 **공유메모리(/dev/shm)** 로 나눠
-# 갖는다. 도커 기본 /dev/shm 은 64MB 라 512MB 짜리 요청이 그대로 터진다:
-#     could not resize shared memory segment to 533794304 bytes:
-#     No space left on device
-#
-# compose 에 shm_size 를 올려 뒀지만, 받는 쪽 환경까지 보장할 수는 없다.
-# 직렬로 지으면 공유메모리를 안 쓰므로 어디서든 돈다. 속도도 문제가 아니다 —
-# 벡터 14,322개 기준 직렬 빌드가 27초다.
 BUILD_SESSION_SETUP: tuple[str, ...] = ("SET max_parallel_maintenance_workers = 0",)

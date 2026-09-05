@@ -217,10 +217,10 @@ WHERE description IS NOT NULL AND body_is_image = false
 
 ## Windows 개발 환경 주의
 
-### 1. psycopg async 는 SelectorEventLoop 가 필요하다
+### 1. psycopg async 는 SelectorEventLoop 가 필요할 수 있다
 
-Windows 기본 이벤트 루프(`ProactorEventLoop`)에서는 psycopg 가 async 모드로
-동작하지 않는다 (`InterfaceError: Psycopg cannot use the 'ProactorEventLoop'`).
+Windows 기본 이벤트 루프(`ProactorEventLoop`)에서 psycopg 가
+`InterfaceError: Psycopg cannot use the 'ProactorEventLoop'` 로 죽으면,
 uvicorn/arq 를 띄우기 **전에** 정책을 바꿔야 한다.
 
 ```python
@@ -229,11 +229,8 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 ```
 
-- 앱: `app/main.py` 최상단(uvicorn 이 루프를 만들기 전에 import 되는 위치)
-- 워커: `app/worker.py` 최상단
-- alembic: 해당 없음. `env.py` 가 동기 엔진을 쓴다
-
-검증됨: 기본 루프 → 연결 실패 / SelectorEventLoop → 정상.
+코드에는 넣지 않는다 (개발은 macOS/Linux 기준). Windows 에서 이 오류를
+만나면 진입점 최상단에 위 3줄을 임시로 넣는다.
 
 ### 2. 포트 충돌
 
@@ -274,7 +271,7 @@ ai-service/
 | R2 | `crawler` → `market.repository` (쓰기)만 |
 | R3 | `chat` → `market.queries` (읽기)만. `market.models` / `repository` 직접 참조 금지 |
 | R4 | `llm/port.py` 는 어댑터를 모른다. 주입만 받는다 |
-| R5 | 비즈니스 상수는 `core/enums.py` 에만 |
+| R5 | Enum·비즈니스 상수는 소유 도메인에 (`market/enums.py`, `chat/enums.py`) |
 
 CI에서 강제:
 

@@ -34,7 +34,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.core import enums
+from app.domains.chat import enums
+from app.domains.chat.enums import sql_in
 
 SCHEMA = "chat"
 
@@ -46,7 +47,6 @@ def _created_at() -> Column:
 class ChatSession(SQLModel, table=True):
     __tablename__ = "chat_session"
     __table_args__ = (
-        # 목록 조회는 삭제되지 않은 세션만 본다
         Index(
             "chat_session_user_idx",
             "user_id",
@@ -64,15 +64,14 @@ class ChatSession(SQLModel, table=True):
             server_default=text("gen_random_uuid()"),
         ),
     )
-    user_id: str = Field(max_length=64)  # dev: X-User-Id / jwt: sub 클레임
-    title: str | None = Field(default=None, max_length=200)  # 첫 질문으로 자동 생성
+    user_id: str = Field(max_length=64)
+    title: str | None = Field(default=None, max_length=200)
     message_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     last_message_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
     created_at: datetime | None = Field(default=None, sa_column=_created_at())
     updated_at: datetime | None = Field(default=None, sa_column=_created_at())
-    # soft delete. 조회 시 IS NULL 조건 필수.
     deleted_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
     messages: list["ChatMessage"] = Relationship(back_populates="session", cascade_delete=True)
@@ -81,7 +80,7 @@ class ChatSession(SQLModel, table=True):
 class ChatMessage(SQLModel, table=True):
     __tablename__ = "chat_message"
     __table_args__ = (
-        CheckConstraint(enums.sql_in("role", enums.MessageRole), name="chat_message_role_chk"),
+        CheckConstraint(sql_in("role", enums.MessageRole), name="chat_message_role_chk"),
         UniqueConstraint("session_id", "seq", name="chat_message_uk"),
         {"schema": SCHEMA},
     )
@@ -93,7 +92,6 @@ class ChatMessage(SQLModel, table=True):
         ondelete="CASCADE",
     )
     seq: int
-    # Enum 은 String 으로 고정한다 (market/models.py 상단 주석 참고)
     role: enums.MessageRole = Field(sa_type=String(16))
     content: str = Field(default="", sa_type=Text, sa_column_kwargs={"server_default": text("''")})
     token_count: int | None = None
@@ -104,16 +102,9 @@ class ChatMessage(SQLModel, table=True):
 
 
 class ChatToolCall(SQLModel, table=True):
-    """툴 호출 로그.
-
-    chart_payload 로 세션 재진입 시 LLM 재호출 없이 그래프를 복원한다.
-    차트화 불가한 툴이면 None.
-    """
-
     __tablename__ = "chat_tool_call"
     __table_args__ = (
         Index("chat_tool_call_message_idx", "message_id", "seq"),
-        # 툴별 성능 · 실패율 확인용
         Index("chat_tool_call_tool_idx", "tool_name", text("created_at DESC")),
         {"schema": SCHEMA},
     )
@@ -124,7 +115,7 @@ class ChatToolCall(SQLModel, table=True):
         foreign_key=f"{SCHEMA}.chat_message.id",
         ondelete="CASCADE",
     )
-    seq: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})  # 한 턴에 여러 호출
+    seq: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     tool_name: str = Field(max_length=64)
     arguments: dict[str, Any] = Field(
         default_factory=dict,

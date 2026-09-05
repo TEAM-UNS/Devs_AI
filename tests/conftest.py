@@ -10,21 +10,13 @@ fake_embedder       app.llm.fake.FakeEmbedder (해시 기반 결정적 벡터)
 client              httpx AsyncClient + FastAPI app (의존성 오버라이드)
 site_snapshot       크롤러 테스트용 저장된 HTML/JSON 원본
 
-★ 이벤트 루프 정책은 여기서 잡는다.
-  Windows 기본 ProactorEventLoop 에서는 psycopg async 가 동작하지 않아
-  DB 테스트가 전부 깨진다. pytest-asyncio 가 루프를 만들기 전인
-  conftest import 시점이 유일한 기회다.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from app.core.database import ensure_selector_event_loop_policy
-
-ensure_selector_event_loop_policy()
-
-from app.core.database import dispose_engines, session_scope
+from app.core.database import close_engine, get_worker_session
 from app.llm.fake import FakeEmbedder
 
 
@@ -41,7 +33,7 @@ async def db():
     docker compose 가 안 떠 있는 환경에서도 순수 단위 테스트는 돌아야 한다.
     """
     try:
-        async with session_scope() as session:
+        async with get_worker_session() as session:
             await session.exec(_ping())
             yield session
     except Exception as exc:  # noqa: BLE001 — 접속 실패는 skip 사유다
@@ -55,6 +47,6 @@ def _ping():
 
 
 @pytest.fixture(scope="session", autouse=True)
-async def _dispose_engines_at_end():
+async def _close_engine_at_end():
     yield
-    await dispose_engines()
+    await close_engine()

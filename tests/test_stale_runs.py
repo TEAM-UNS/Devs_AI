@@ -12,9 +12,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import text
 
-from app.core import enums
-from app.core.database import session_scope
-from app.domains.market import repository
+from app.core.database import get_worker_session
+from app.domains.market import enums, repository
 
 MARK = "테스트-stale-run"
 
@@ -22,14 +21,14 @@ MARK = "테스트-stale-run"
 @pytest.fixture
 async def cleanup(db):
     yield
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await session.exec(
             text("DELETE FROM market.crawl_run WHERE keyword = :kw").bindparams(kw=MARK)
         )
 
 
 async def _make_run(*, minutes_ago: int, status: enums.RunStatus) -> int:
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         run_id = await repository.start_run(
             session, kind=enums.RunKind.CRAWL, source="saramin", keyword=MARK
         )
@@ -46,7 +45,7 @@ async def _make_run(*, minutes_ago: int, status: enums.RunStatus) -> int:
 
 
 async def _status(run_id: int) -> tuple[str, bool]:
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         row = (
             await session.exec(
                 text(
@@ -60,7 +59,7 @@ async def _status(run_id: int) -> tuple[str, bool]:
 async def test_old_running_row_is_failed(cleanup) -> None:
     run_id = await _make_run(minutes_ago=60, status=enums.RunStatus.RUNNING)
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         reaped = await repository.fail_stale_runs(session, older_than_seconds=1200)
 
     assert reaped >= 1
@@ -76,7 +75,7 @@ async def test_recent_running_row_is_left_alone(cleanup) -> None:
     """
     run_id = await _make_run(minutes_ago=1, status=enums.RunStatus.RUNNING)
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await repository.fail_stale_runs(session, older_than_seconds=1200)
 
     status, _ = await _status(run_id)
@@ -86,7 +85,7 @@ async def test_recent_running_row_is_left_alone(cleanup) -> None:
 async def test_finished_rows_are_untouched(cleanup) -> None:
     run_id = await _make_run(minutes_ago=60, status=enums.RunStatus.SUCCESS)
 
-    async with session_scope() as session:
+    async with get_worker_session() as session:
         await repository.fail_stale_runs(session, older_than_seconds=1200)
 
     status, _ = await _status(run_id)

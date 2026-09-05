@@ -5,8 +5,7 @@
     - _job_id 형식이 f"crawl:{site}:{keyword}:{date}" 다 (중복 큐잉 차단)
     - 같은 날 두 번 돌리면 두 번째는 전부 중복으로 잡힌다
       → 워커 재시작(run_at_startup)이 같은 날 수집을 다시 돌리지 않는다
-    - crawl_site 는 **변경분만** embed_postings 로 넘기고,
-      EMBED_ENQUEUE_CHUNK 개씩 쪼갠다
+    - crawl_site 는 임베딩을 큐잉하지 않는다 (적재만 한다)
 
 redis 는 호출을 기록하는 스텁이다. arq 는 이미 있는 _job_id 에 대해
 enqueue_job 이 None 을 돌려주므로 그 동작을 그대로 흉내 낸다.
@@ -158,48 +157,10 @@ def _settings_cache():
     get_settings.cache_clear()
 
 
-async def test_crawl_site_enqueues_only_changed_postings(_patch_crawl) -> None:
+async def test_crawl_site_does_not_enqueue_embedding(_patch_crawl) -> None:
+    """★ 수집과 임베딩을 분리했다. 적재만 하고 임베딩은 나중에 로컬 모델로
+    한 번에 돌린다. 여기에 enqueue 가 되살아나면 API 키를 다시 태운다."""
     _StubService.stats = _Stats([11, 22, 33])
-    redis = FakeRedis()
-
-    await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
-
-    assert redis.calls == [("embed_postings", ([11, 22, 33],), None)]
-
-
-async def test_crawl_site_splits_large_enqueues(_patch_crawl, monkeypatch) -> None:
-    """★ 처리량이 낮은 제공자에서는 한 job 에 300건을 넣으면 job_timeout 에 잘린다.
-    (Voyage 무료 등급이 분당 12건이었다)
-
-    쪼개 두면 각 job 이 시간 안에 끝나고, 하나가 실패해도 그 조각만 다시 돈다.
-
-    ★ 값을 여기서 고정한다. gemini 로 옮기며 기본값이 0(쪼개지 않음)이 됐지만,
-      이 테스트가 확인하는 것은 기본값이 아니라 쪼개는 로직 자체다.
-    """
-    monkeypatch.setenv("EMBED_ENQUEUE_CHUNK", "40")
-    get_settings.cache_clear()
-
-    _StubService.stats = _Stats(list(range(1, 101)))
-    redis = FakeRedis()
-
-    await tasks.crawl_site({"redis": redis}, "saramin", "백엔드", 8, 7)
-
-    batches = [args[0] for name, args, _ in redis.calls if name == "embed_postings"]
-    assert [len(b) for b in batches] == [40, 40, 20]
-    # 쪼개도 하나도 빠지면 안 된다
-    assert [pid for batch in batches for pid in batch] == list(range(1, 101))
-
-
-def test_enqueue_chunk_zero_means_one_job() -> None:
-    """표준 등급으로 올리면 EMBED_ENQUEUE_CHUNK=0 으로 두어 한 번에 넘긴다."""
-    assert tasks._chunked([1, 2, 3], 0) == [[1, 2, 3]]
-    assert tasks._chunked([1, 2, 3], 10) == [[1, 2, 3]]
-    assert tasks._chunked([1, 2, 3], 2) == [[1, 2], [3]]
-
-
-async def test_crawl_site_skips_enqueue_when_nothing_changed(_patch_crawl) -> None:
-    """해시가 같아 touch 만 한 공고는 재임베딩할 것이 없다."""
-    _StubService.stats = _Stats([])
     redis = FakeRedis()
 
     await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)

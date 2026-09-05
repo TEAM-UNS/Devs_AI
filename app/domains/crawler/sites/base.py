@@ -32,7 +32,6 @@ from app.domains.crawler.schemas import RawJob
 
 log = logging.getLogger(__name__)
 
-# 실제 브라우저 헤더. Referer 가 없으면 막는 엔드포인트가 흔하다.
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -45,25 +44,18 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class CrawlError(Exception):
-    """수집 실패 공통."""
+    pass
 
 
 class FetchError(CrawlError):
-    """네트워크·HTTP 실패 (재시도 소진)."""
+    pass
 
 
 class ParseError(CrawlError):
-    """응답 구조가 예상과 다름. 사이트 개편 신호."""
+    pass
 
 
 class SelectorBrokenError(ParseError):
-    """1페이지에서 0건. ★ 반드시 실패로 마감한다 (명세 3-3).
-
-    "검색 결과가 없다" 와 "셀렉터가 깨졌다" 는 구분해야 한다. 1페이지가
-    비는 것은 후자다. 조용히 break 하면 매일 0건을 수집하면서 crawl_run 은
-    success 로 남아 정상처럼 보인다.
-    """
-
     def __init__(self, source: str, keyword: str | None = None) -> None:
         target = f"{source}({keyword})" if keyword else source
         super().__init__(f"{target}: 1페이지 0건 — 목록 셀렉터/엔드포인트가 깨졌습니다.")
@@ -72,8 +64,6 @@ class SelectorBrokenError(ParseError):
 
 
 class BaseSiteCrawler(abc.ABC):
-    """사이트 어댑터 베이스. `async with` 로 쓴다."""
-
     source: str
     referer: str
     concurrency: int = 2
@@ -138,13 +128,11 @@ class BaseSiteCrawler(abc.ABC):
         return self.snapshot_dir / f"{_SAFE_NAME.sub('_', name)}{suffix}"
 
     def save_snapshot(self, name: str, text: str, suffix: str = ".json") -> Path:
-        """원본 응답 저장. 이름은 덮어쓰기 가능한 결정적 이름을 쓴다."""
         path = self.snapshot_path(name, suffix)
         path.write_text(text, encoding="utf-8")
         return path
 
     def load_snapshot(self, name: str) -> Any | None:
-        """저장된 JSON 원본을 다시 읽는다 (재파싱용)."""
         path = self.snapshot_path(name)
         if not path.exists():
             return None
@@ -161,7 +149,6 @@ class BaseSiteCrawler(abc.ABC):
         params: dict[str, Any] | None = None,
         snapshot: str | None = None,
     ) -> Any:
-        """JSON GET. 딜레이·재시도·감속·스냅샷을 모두 적용한다."""
         text = await self.get_text(url, params=params, snapshot=snapshot, suffix=".json")
         return json.loads(text)
 
@@ -172,7 +159,6 @@ class BaseSiteCrawler(abc.ABC):
         params: dict[str, Any] | None = None,
         snapshot: str | None = None,
     ) -> BeautifulSoup:
-        """HTML GET → BeautifulSoup. 원본은 .html 로 저장된다."""
         html = await self.get_text(url, params=params, snapshot=snapshot, suffix=".html")
         return BeautifulSoup(html, "lxml")
 
@@ -184,7 +170,6 @@ class BaseSiteCrawler(abc.ABC):
         snapshot: str | None = None,
         suffix: str = ".html",
     ) -> str:
-        """본문 문자열 GET. 딜레이·재시도·감속·스냅샷을 모두 적용한다."""
         if self._client is None:
             raise RuntimeError("async with 로 진입한 뒤 사용하세요.")
 
@@ -227,7 +212,6 @@ class BaseSiteCrawler(abc.ABC):
                         url,
                     )
 
-                # 지수 백오프 (재시도가 남았을 때만)
                 if attempt < self._max_retry:
                     await asyncio.sleep(self._delay * (2 ** (attempt - 1)))
 
@@ -236,8 +220,8 @@ class BaseSiteCrawler(abc.ABC):
     # ── 어댑터가 구현할 것 ────────────────────────────────────────────────
     @abc.abstractmethod
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
-        """목록 1페이지. (공고들, 전체 건수) 를 돌려준다."""
+        pass
 
     @abc.abstractmethod
     async def fetch_detail(self, job: RawJob) -> RawJob:
-        """상세를 채운 RawJob 을 돌려준다. 실패해도 목록 데이터는 살린다."""
+        pass
