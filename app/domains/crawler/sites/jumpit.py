@@ -39,17 +39,12 @@ LIST_URL = f"{API_BASE}/api/positions"
 DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
 WEB_BASE = "https://jumpit.saramin.co.kr"
 
-# 관찰된 페이지 크기. 서버가 정하므로 요청 파라미터로 바꾸지 않는다.
 PAGE_SIZE = 16
 
 KST = timezone(timedelta(hours=9))
 
 
 def _parse_dt(value: Any) -> datetime | None:
-    """ "2026-08-07T23:59:59" · "2026-08-07 23:59:59" 둘 다 받는다.
-
-    점핏은 타임존을 주지 않는다. 한국 채용 사이트이므로 KST 로 해석한다.
-    """
     if not value or not isinstance(value, str):
         return None
     try:
@@ -61,7 +56,6 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _split_categories(value: Any) -> list[str]:
-    """목록의 jobCategory 는 "DBA,서버/백엔드 개발자" 처럼 콤마로 붙어 있다."""
     if not value or not isinstance(value, str):
         return []
     return [c.strip() for c in value.split(",") if c.strip()]
@@ -81,7 +75,6 @@ class JumpitCrawler(BaseSiteCrawler):
         return self.parse_list(payload, page)
 
     def parse_list(self, payload: Any, page: int) -> tuple[list[RawJob], int]:
-        """응답 → RawJob 목록. 스냅샷 재파싱에도 그대로 쓴다."""
         result = (payload or {}).get("result")
         if not isinstance(result, dict) or "positions" not in result:
             raise ParseError(
@@ -101,7 +94,7 @@ class JumpitCrawler(BaseSiteCrawler):
         return jobs, total
 
     def _map_list_item(self, item: dict[str, Any]) -> RawJob:
-        job_id = item["id"]  # 없으면 구조가 바뀐 것이므로 터뜨린다
+        job_id = item["id"]
         stacks = item.get("techStacks") or []
         return RawJob(
             source=self.source,
@@ -109,7 +102,6 @@ class JumpitCrawler(BaseSiteCrawler):
             url=f"{WEB_BASE}/position/{job_id}",
             title=item.get("title") or "",
             company_name=item.get("companyName") or "",
-            # 목록에서는 문자열 배열로 온다
             tech_stacks=[s for s in stacks if isinstance(s, str)],
             job_categories=_split_categories(item.get("jobCategory")),
             locations=[loc for loc in (item.get("locations") or []) if isinstance(loc, str)],
@@ -128,7 +120,6 @@ class JumpitCrawler(BaseSiteCrawler):
                 snapshot=f"position_{job.source_job_id}",
             )
         except CrawlError as exc:
-            # 상세 실패는 치명적이지 않다. 목록 데이터만으로 저장한다.
             log.warning("jumpit 상세 실패 id=%s: %s", job.source_job_id, exc)
             return job
         return self.merge_detail(job, payload)
@@ -139,7 +130,6 @@ class JumpitCrawler(BaseSiteCrawler):
             log.warning("jumpit 상세 응답에 result 없음 id=%s", job.source_job_id)
             return job
 
-        # 상세의 techStacks 는 {stack, imagePath} 객체 배열이다.
         stacks = [
             s.get("stack")
             for s in (result.get("techStacks") or [])

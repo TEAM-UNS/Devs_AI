@@ -30,30 +30,19 @@ from bs4 import BeautifulSoup, Tag
 
 log = logging.getLogger(__name__)
 
-# 본문 텍스트가 이 길이 미만이면 "이미지 공고" 후보로 본다.
 IMAGE_POSTING_MIN_CHARS = 200
 
-# NBSP( ) 와 zero-width space(​). 채용 사이트 본문에 흔히 섞여 있어
-# 그냥 두면 "Java​" 처럼 되어 스킬 매칭이 실패한다.
 _WS = re.compile("[ 	 \u200b]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  텍스트 추출
 # ═══════════════════════════════════════════════════════════════════════════
 def block_text(node: Tag | None) -> str:
-    """<br> 과 블록 요소를 개행으로 살려서 텍스트를 뽑는다.
-
-    get_text() 만 쓰면 "자격요건Java 3년" 처럼 한 줄로 붙어버려서
-    섹션 헤더를 찾을 수 없게 된다. 추출기가 섹션 분할에 의존하므로
-    개행 보존이 필수다.
-    """
     if node is None:
         return ""
 
     working = node
-    # <br> → 개행. 원본 트리를 건드리지 않도록 복사본에서 작업한다.
     if working.find("br"):
         working = BeautifulSoup(str(node), "lxml")
         for br in working.find_all("br"):
@@ -65,10 +54,8 @@ def block_text(node: Tag | None) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  1순위 — JSON-LD
 # ═══════════════════════════════════════════════════════════════════════════
 def _iter_json_objects(payload: Any):
-    """@graph · 배열 · 단일 객체를 모두 평평하게 훑는다."""
     if isinstance(payload, list):
         for item in payload:
             yield from _iter_json_objects(item)
@@ -79,11 +66,6 @@ def _iter_json_objects(payload: Any):
 
 
 def jobposting_from_jsonld(soup: BeautifulSoup) -> dict[str, Any] | None:
-    """schema.org JobPosting 을 찾아 돌려준다. 없으면 None.
-
-    사이트마다 JSON-LD 를 여러 개 심는다(BreadcrumbList · Organization 등).
-    @type 이 JobPosting 인 것만 고른다.
-    """
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         raw = script.string or script.get_text()
         if not raw or not raw.strip():
@@ -91,7 +73,6 @@ def jobposting_from_jsonld(soup: BeautifulSoup) -> dict[str, Any] | None:
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            # 주석·후행 콤마가 섞인 JSON-LD 가 실제로 존재한다. 조용히 넘어간다.
             log.debug("JSON-LD 파싱 실패 (무시)")
             continue
 
@@ -104,7 +85,6 @@ def jobposting_from_jsonld(soup: BeautifulSoup) -> dict[str, Any] | None:
 
 
 def jsonld_text(value: Any) -> str | None:
-    """JSON-LD 값에서 문자열을 꺼낸다. 중첩 객체·배열을 받아준다."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -115,7 +95,6 @@ def jsonld_text(value: Any) -> str | None:
                 return found
         return None
     if isinstance(value, dict):
-        # streetAddress · addressLocality 는 jobLocation.address 에서 온다.
         for key in (
             "name",
             "value",
@@ -132,13 +111,9 @@ def jsonld_text(value: Any) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  2순위 — 라벨-값
 # ═══════════════════════════════════════════════════════════════════════════
-# 라벨 정규화: 공백·콜론·별표를 떼고 비교한다. "대표자명*" 도 "대표자명" 으로.
 _LABEL_NOISE = re.compile(r"[\s:：*]+")
 
-# 논리 키 → 라벨 후보. 앞에 있는 것이 우선.
-# 사람인·잡코리아가 같은 개념을 다른 라벨로 부르는 것을 여기서 흡수한다.
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
     "career": ("경력", "경력조건", "경력사항"),
     "education": ("학력", "학력조건"),
@@ -164,21 +139,7 @@ def normalize_label(text: str) -> str:
     return _LABEL_NOISE.sub("", text or "").strip()
 
 
-# 값 노드 안에 섞여 있는 UI 부속. 텍스트로 뽑기 전에 걷어낸다.
-#
-# 사람인 근무형태 dd 는 이렇게 생겼다.
-#     <dd><strong>정규직, 병역특례</strong>
-#         <div class="toolTipWrap">
-#           <button><span class="blind">근무형태</span><span>상세보기</span></button>
-#           <div>정규직 수습기간 3개월 … 닫기</div>
-#         </div></dd>
-# 그대로 get_text 하면 "정규직, 병역특례 근무형태 상세보기 정규직 수습기간…" 이
-# 되고, varchar(30) 에 잘려 들어가 값이 통째로 쓰레기가 된다.
-#
 # ★ <a> 는 지우지 않는다. 홈페이지 값은 스냅샷 228건 중 대부분이 <a> 안에만
-#   있어서, 앵커를 지우면 company.homepage 가 통째로 빈다. 실제 노이즈원은
-#   button 과 툴팁 컨테이너다 (스냅샷 278건 실측: 근무형태 평균 17.2자 →
-#   9.9자, "상세보기" 잔존 0건, 빈 값 0건).
 VALUE_CHROME = (
     "script, style, button, "
     "[class*='tooltip' i], [class*='tip_' i], [role='dialog'], [role='tooltip'], "
@@ -187,11 +148,6 @@ VALUE_CHROME = (
 
 
 def clean_value_text(node: Tag) -> str:
-    """값 노드에서 UI 부속을 걷어낸 텍스트.
-
-    ★ 반드시 복사본에서 작업한다. 원본을 decompose 하면 같은 soup 을 나중에
-      읽는 호출부(JSON-LD · 본문 추출)에서 노드가 사라져 있다.
-    """
     duplicate = copy.copy(node)
     for junk in duplicate.select(VALUE_CHROME):
         junk.decompose()
@@ -199,12 +155,6 @@ def clean_value_text(node: Tag) -> str:
 
 
 def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
-    """페이지의 모든 라벨-값 쌍을 dict 로 만든다.
-
-    dl(dt/dd) · table(th/td) · "제목/설명" 형태의 클래스 쌍을 모두 훑는다.
-    같은 라벨이 여러 번 나오면 **처음 것**을 남긴다. 공고 상세가 위쪽에,
-    추천 공고나 푸터가 아래쪽에 오기 때문이다.
-    """
     pairs: dict[str, str] = {}
 
     def put(label: str, value: str) -> None:
@@ -213,7 +163,6 @@ def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
         if key and value and key not in pairs:
             pairs[key] = value
 
-    # dl > dt/dd — 위치로 짝을 맞춘다 (dt 하나에 dd 여러 개인 경우는 첫 dd)
     for dl in soup.find_all("dl"):
         terms = dl.find_all("dt", recursive=True)
         for term in terms:
@@ -221,14 +170,11 @@ def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
             if value_node is not None:
                 put(term.get_text(" "), clean_value_text(value_node))
 
-    # table > th/td — 같은 행의 th 다음 td, 또는 세로형 테이블
     for header in soup.find_all("th"):
         value_node = header.find_next_sibling("td")
         if value_node is not None:
             put(header.get_text(" "), clean_value_text(value_node))
 
-    # 클래스명이 tit/desc, tit/txt, title/content 로 짝지어진 흔한 패턴.
-    # 클래스명에 의존하지만 어디까지나 보조 수단이다.
     for holder in soup.find_all(class_=re.compile(r"(tit|title|label|term)", re.IGNORECASE)):
         sibling = holder.find_next_sibling()
         if sibling is not None and sibling.name not in ("script", "style"):
@@ -238,26 +184,16 @@ def label_value_pairs(soup: BeautifulSoup | Tag) -> dict[str, str]:
 
 
 def largest_text_block(soup: BeautifulSoup, *, min_chars: int = 300) -> Tag | None:
-    """본문으로 보이는 가장 큰 텍스트 덩어리를 찾는다.
-
-    클래스명이 tailwind 처럼 의미 없는 사이트(개편 후 잡코리아)에서 쓴다.
-    "가장 긴 텍스트를 가진, 자식 중 더 나은 후보가 없는 노드" 를 고른다.
-    셀렉터를 안 쓰므로 개편에 영향을 받지 않는다.
-
-    스크립트·스타일·네비게이션은 후보에서 제외한다.
-    """
     best: Tag | None = None
     best_len = min_chars
 
     for node in soup.find_all(("article", "section", "div", "td")):
         if node.find(("script", "style"), recursive=False):
-            pass  # 자식에 스크립트가 있어도 텍스트가 크면 후보다
+            pass
         text = node.get_text(" ", strip=True)
         length = len(text)
         if length < best_len:
             continue
-        # 부모보다 자식이 더 좁으면서 길이가 비슷하면 자식을 선호한다
-        # (body 전체가 뽑히는 것을 막는다)
         if best is not None and best in node.parents and length < best_len * 1.15:
             continue
         best, best_len = node, length
@@ -266,9 +202,6 @@ def largest_text_block(soup: BeautifulSoup, *, min_chars: int = 300) -> Tag | No
 
 NOISE_RE = re.compile(r"합격자소서|인적성|면접 후기|취업 전략|추천 ?공고|맞춤공고|로그인")
 
-# 페이지 크롬. 본문 추출 전에 통째로 걷어낸다.
-# 합격자소서 후기·AI추천공고·AI면접이 스킬로 잡힌 근본 원인이 이걸 안 지운 것이었다.
-# 별칭을 하나씩 빼는 대응은 두더지잡기라 소스에서 제거한다.
 BOILERPLATE = (
     "nav, header, footer, aside, .related, .recommend, "
     "[class*='banner'], [class*='ad-'], [class*='recommend'], "
@@ -277,11 +210,6 @@ BOILERPLATE = (
 
 
 def strip_boilerplate(soup: BeautifulSoup) -> BeautifulSoup:
-    """스크립트와 페이지 크롬을 제거한다.
-
-    ★ 호출부는 반드시 복사본을 넘길 것. decompose 는 파괴적이라
-      원본을 넘기면 나중에 JSON-LD 를 다시 읽을 때 사라져 있다.
-    """
     for tag in soup.find_all(("script", "style", "noscript", "iframe")):
         tag.decompose()
     for node in soup.select(BOILERPLATE):
@@ -296,13 +224,6 @@ def section_anchored_block(
     min_chars: int = 300,
     max_chars: int = 30_000,
 ) -> Tag | None:
-    """섹션 키워드를 가장 많이 품은 '적당한 크기' 조상 노드를 고른다.
-
-    largest_text_block() 은 "가장 큰 덩어리" 를 고르는데, 사이드바나
-    합격자소서 후기가 본문보다 클 수 있어 엉뚱한 곳을 잡는다.
-    이 함수는 "자격요건" 같은 앵커에서 위로 올라가며 후보를 모으고,
-    섹션 히트가 많고 잡음이 적은 쪽을 고른다. 클래스명을 쓰지 않는다.
-    """
     best: Tag | None = None
     best_score = (0, 0)
 
@@ -315,7 +236,7 @@ def section_anchored_block(
             if min_chars <= len(text) <= max_chars:
                 score = (
                     len(section_re.findall(text)) - len(NOISE_RE.findall(text)),
-                    -len(text),  # 같은 점수면 더 좁은 쪽 (본문에 가깝다)
+                    -len(text),
                 )
                 if score > best_score:
                     best, best_score = node, score
@@ -324,7 +245,6 @@ def section_anchored_block(
 
 
 def pick(pairs: dict[str, str], key: str) -> str | None:
-    """논리 키로 값을 꺼낸다. 라벨 표기 차이는 LABEL_ALIASES 가 흡수한다."""
     for label in LABEL_ALIASES.get(key, (key,)):
         if value := pairs.get(normalize_label(label)):
             return value
@@ -332,13 +252,11 @@ def pick(pairs: dict[str, str], key: str) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  값 정규화
 # ═══════════════════════════════════════════════════════════════════════════
 _INT = re.compile(r"[\d,]+")
 
 
 def parse_employee_count(text: str | None) -> int | None:
-    """ "175 명 (2026년 기준)" → 175, "1,250명" → 1250."""
     if not text:
         return None
     if match := _INT.search(text.replace(" ", "")):
@@ -346,7 +264,6 @@ def parse_employee_count(text: str | None) -> int | None:
             value = int(match.group(0).replace(",", ""))
         except ValueError:
             return None
-        # 5만 명이 넘는 값은 매출액 등을 잘못 읽은 것으로 본다.
         return value if 0 < value <= 50_000 else None
     return None
 
@@ -356,10 +273,6 @@ _UNITS = (1_0000_0000_0000, 1_0000_0000, 1_0000)
 
 
 def parse_revenue(text: str | None) -> int | None:
-    """ "597억 2,533만원" → 59,725,330,000 (원 단위).
-
-    한국 공시 표기는 조/억/만을 섞어 쓴다. 자리별로 더한다.
-    """
     if not text:
         return None
     match = _REVENUE.search(text.replace(" ", ""))
@@ -380,7 +293,6 @@ _CAREER_ONE = re.compile(r"(\d+)\s*년")
 
 
 def parse_career(text: str | None) -> tuple[int | None, int | None]:
-    """ "경력 5년 ↑" → (5, None), "3~7년" → (3, 7), "신입" → (0, 0), "무관" → (None, None)."""
     if not text:
         return None, None
     cleaned = text.strip()
@@ -400,18 +312,8 @@ def parse_career(text: str | None) -> tuple[int | None, int | None]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  이미지 공고 판별
 # ═══════════════════════════════════════════════════════════════════════════
 def looks_like_image_posting(node: Tag | None, text: str | None) -> bool:
-    """본문이 이미지 한 장인 공고인지.
-
-    중소기업 공고에 흔하다. 텍스트가 없으니 스택이 안 잡히고, 그대로 두면
-    "이 회사는 아무 기술도 안 쓴다" 로 집계되어 통계가 왜곡된다.
-
-    ★ 호출 순서 주의: 본문 유효성 검사(extractor.is_valid_body)를 **먼저** 하고,
-      실패했을 때만 이 함수를 부른다. 길이만 보면 안내문 500자짜리가
-      "본문 있음" 으로 통과해 이미지 판정 자체가 안 걸린다.
-    """
     if node is None:
         return False
     if len((text or "").strip()) >= IMAGE_POSTING_MIN_CHARS:
@@ -422,11 +324,6 @@ def looks_like_image_posting(node: Tag | None, text: str | None) -> bool:
 def classify_body(
     node: Tag | None, text: str | None, *, is_valid: bool
 ) -> tuple[bool, bool, list[str]]:
-    """본문 판정 결과 → (body_is_image, body_extract_failed, image_urls).
-
-    유효한 본문이면 둘 다 False.
-    아니면 이미지가 있는지 보고 image / failed 를 가른다.
-    """
     if is_valid:
         return False, False, []
     if looks_like_image_posting(node, text):
@@ -434,14 +331,10 @@ def classify_body(
     return False, True, []
 
 
-# 공고 본문 이미지가 아닌 것들. 회사 로고·아이콘이 이미지 공고로 오분류되면
-# "본문 없는 공고" 가 통째로 잘못 집계된다.
-# (잡코리아 진단에서 102/103 이 …/LogoImage 였다.)
 _NON_CONTENT_IMAGE = re.compile(
     r"logo|icon|sprite|blank|spacer|avatar|profile|thumb|badge|로고|아이콘|배너|썸네일",
     re.IGNORECASE,
 )
-# 공고 이미지는 보통 폭 300px 이상이다. 그보다 작으면 장식이다.
 MIN_CONTENT_IMAGE_PX = 300
 
 
@@ -453,7 +346,6 @@ def _is_content_image(img: Tag) -> bool:
         return False
     if _NON_CONTENT_IMAGE.search(img.get("alt") or ""):
         return False
-    # 크기 정보가 있고 작으면 장식이다. 없으면 판단하지 않고 통과시킨다.
     for attr in ("width", "height"):
         raw = (img.get(attr) or "").strip().rstrip("px")
         if raw.isdigit() and int(raw) < MIN_CONTENT_IMAGE_PX:
@@ -462,10 +354,6 @@ def _is_content_image(img: Tag) -> bool:
 
 
 def collect_image_urls(node: Tag | None, limit: int = 5) -> list[str]:
-    """공고 본문 이미지 URL. 로고·아이콘은 제외한다.
-
-    나중에 OCR 을 붙일 때 재수집하지 않으려고 저장해 둔다.
-    """
     if node is None:
         return []
     urls: list[str] = []

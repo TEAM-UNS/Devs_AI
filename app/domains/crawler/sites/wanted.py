@@ -43,7 +43,6 @@ LIST_URL = f"{BASE}/api/chaos/navigation/v1/results"
 DETAIL_URL = f"{BASE}/api/chaos/jobs/v1/{{job_id}}/details"
 WEB_URL = f"{BASE}/wd/{{job_id}}"
 
-# 518 = 개발 직군 전체. 하위 직무는 category_tag.id 로 구분된다.
 JOB_GROUP_DEV = 518
 PAGE_SIZE = 20
 
@@ -64,12 +63,10 @@ def _parse_dt(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    # 타임존이 없으면 KST 로 해석한다 (한국 채용 사이트).
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=KST)
 
 
 def _titles(tags: Any) -> list[str]:
-    """[{id, title}] · ["Java"] 두 형태를 모두 받아 문자열 목록으로."""
     result: list[str] = []
     for tag in tags or []:
         if isinstance(tag, dict) and (title := tag.get("title") or tag.get("name")):
@@ -108,7 +105,7 @@ class WantedCrawler(BaseSiteCrawler):
                 "years": -1,
                 "locations": "all",
                 "limit": PAGE_SIZE,
-                "offset": (page - 1) * PAGE_SIZE,  # 원티드는 offset 기반이다
+                "offset": (page - 1) * PAGE_SIZE,
             },
             snapshot=f"list_p{page}",
         )
@@ -127,7 +124,6 @@ class WantedCrawler(BaseSiteCrawler):
                 jobs.append(self._map_list_item(item))
             except (KeyError, TypeError, ValueError) as exc:
                 log.warning("원티드 목록 항목 매핑 실패 id=%s: %s", item.get("id"), exc)
-        # 전체 건수를 주지 않는다. 0 을 돌려주고 페이지가 빌 때까지 돈다.
         return jobs, 0
 
     def _map_list_item(self, item: dict[str, Any]) -> RawJob:
@@ -171,7 +167,6 @@ class WantedCrawler(BaseSiteCrawler):
         detail = posting.get("detail") or {}
         company = posting.get("company") or {}
 
-        # 본문 3섹션. benefits 는 일부러 뺀다 (복지는 추출 대상이 아니다).
         responsibility = detail.get("main_tasks")
         requirements = detail.get("requirements")
         preferred = detail.get("preferred_points")
@@ -198,7 +193,6 @@ class WantedCrawler(BaseSiteCrawler):
             "company_source_id": (
                 str(company["id"]) if company.get("id") else job.company_source_id
             ),
-            # JSON 이라 본문 추출 실패라는 개념이 없다. 섹션이 전부 비면 실패다.
             "body_extract_failed": not any((responsibility, requirements, preferred)),
             "raw": {**job.raw, "detail": detail},
         }

@@ -27,17 +27,8 @@ Vector = list[float]
 
 @runtime_checkable
 class EmbedderPort(Protocol):
-    """임베딩 제공자. 도메인은 이 두 메서드만 안다."""
-
     async def embed_documents(self, texts: Sequence[str]) -> list[Vector]:
-        """적재용 임베딩.
-
-        입력 순서와 반환 순서·개수가 반드시 같아야 한다. 호출부(embed_service)는
-        반환 리스트를 인덱스로 원본 청크에 되붙이므로, 순서가 어긋나면 엉뚱한
-        공고에 벡터가 박힌다.
-        """
         ...
 
     async def embed_query(self, text: str) -> Vector:
-        """검색 질의용 임베딩. 문서와 다른 input_type 을 쓰는 모델이 있다."""
         ...
