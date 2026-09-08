@@ -39,3 +39,19 @@ class DataCoverage:
     unclassified_postings: int
     company_count: int
     last_crawl_at: datetime | None
+
+
+@dataclass(frozen=True)
+class SkillCount:
+    rank: int
+    skill: str
+    posting_count: int
+    share: float
+
+
+@dataclass(frozen=True)
+class PopularSkills:
+    items: list[SkillCount]
+    analyzed_postings: int
+    total_postings: int
+    days: int

@@ -48,7 +48,7 @@ from app.domains.market.models import (
     Skill,
     TechField,
 )
-from app.domains.market.schemas import DataCoverage
+from app.domains.market.schemas import DataCoverage, PopularSkills, SkillCount
 
 
 # 공용 표현식 
@@ -133,3 +133,93 @@ class ChatQueries:
             last_crawl_at=last_crawl_at,
         )
 
+    @staticmethod
+    def _posting_filters(
+        field: Optional[TechFieldCode],
+        size_type: Optional[CompanySize],
+        career_level: Optional[CareerLevel],
+        days: Optional[int],
+    ) -> list[Any]:
+        conditions: list[Any] = []
+
+        if days is not None:
+            conditions.append(APPEARED_AT >= datetime.now(UTC) - timedelta(days=days))
+
+        if field is not None:
+            conditions.append(
+                JobPosting.field_id
+                == select(TechField.id).where(TechField.code == field).scalar_subquery()
+            )
+
+        if size_type is not None:
+            conditions.append(
+                JobPosting.company_id.in_(select(Company.id).where(Company.size_type == size_type))
+            )
+
+        if career_level is not None:
+            low, high = _CAREER_RANGES[career_level]
+            if high is not None:
+                conditions.append(func.coalesce(JobPosting.career_min, 0) <= high)
+            conditions.append(JobPosting.career_max.is_(None) | (JobPosting.career_max >= low))
+
+        return conditions
+
+    async def popular_skills(
+        self,
+        field: Optional[TechFieldCode] = None,
+        size_type: Optional[CompanySize] = None,
+        career_level: Optional[CareerLevel] = None,
+        days: Optional[int] = 30,
+        top: int = 20,
+        include_common: bool = False,
+    ) -> PopularSkills:
+        filters = self._posting_filters(
+            field=field, size_type=size_type, career_level=career_level, days=days
+        )
+
+        skill_filters = [PostingSkill.requirement.in_(_DEMAND)]
+        if not include_common:
+            skill_filters.append(Skill.is_common.is_(False))
+
+        posting_count = func.count(func.distinct(PostingSkill.posting_id))
+
+        rows = (
+            await self.session.exec(
+                select(Skill.name, posting_count)
+                .join(PostingSkill, PostingSkill.skill_id == Skill.id)
+                .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+                .where(*filters, *skill_filters)
+                .group_by(Skill.name)
+                .order_by(posting_count.desc(), Skill.name)
+                .limit(top)
+            )
+        ).all()
+
+        analyzed = (
+            await self.session.exec(
+                select(func.count(func.distinct(PostingSkill.posting_id)))
+                .select_from(PostingSkill)
+                .join(Skill, Skill.id == PostingSkill.skill_id)
+                .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+                .where(*filters, *skill_filters)
+            )
+        ).one()
+
+        total = (
+            await self.session.exec(select(func.count()).select_from(JobPosting).where(*filters))
+        ).one()
+
+        return PopularSkills(
+            items=[
+                SkillCount(
+                    rank=index,
+                    skill=name,
+                    posting_count=count,
+                    share=round(count / analyzed, 4) if analyzed else 0.0,
+                )
+                for index, (name, count) in enumerate(rows, start=1)
+            ],
+            analyzed_postings=analyzed,
+            total_postings=total,
+            days=days or 0,
+        )
