@@ -31,22 +31,105 @@ ORM 엔티티가 아니라 schemas.py 의 DTO 를 반환한다.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from typing import Any, Optional
+
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.domains.market.models import (
-    JobPosting,
-)
-from app.domains.market.schemas import (
-    DataCoverage,
-)
+from app.domains.market.enums import CareerLevel, CompanySize, Requirement, RunKind, SalaryType
 
-# ── 공용 표현식 ─────────────────────────────────────────────────────────────
-# ★ collected_at 을 쓰면 안 된다. 재수집 때마다 갱신되는 "마지막으로 본 시각"
+from app.domains.market.enums import TechField as TechFieldCode
+from app.domains.market.models import (
+    Company,
+    CrawlRun,
+    JobPosting,
+    PostingSkill,
+    Skill,
+    TechField,
+)
+from app.domains.market.schemas import DataCoverage
+
+
+# 공용 표현식 
 APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
 
+_DISCLOSED = (SalaryType.RANGE, SalaryType.MIN_ONLY, SalaryType.MAX_ONLY)
 
-async def data_coverage(
-    session: AsyncSession,
-) -> DataCoverage:
-    stmt = select()
+_DEMAND = (Requirement.TAG, Requirement.REQUIRED, Requirement.PREFERRED)
+
+_CAREER_RANGES: dict[CareerLevel, tuple[int, Optional[int]]] = {
+    CareerLevel.NEWCOMER: (0, 0),
+    CareerLevel.JUNIOR: (1, 3),
+    CareerLevel.MID: (4, 7),
+    CareerLevel.SENIOR: (8, None),
+}
+
+
+class ChatQueries:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def data_coverage(self) -> DataCoverage:
+        totals = (
+            await self.session.exec(
+                select(
+                    func.min(JobPosting.created_at),
+                    func.max(JobPosting.created_at),
+                    func.count(JobPosting.id),
+                    func.count(JobPosting.id).filter(
+                        JobPosting.expires_at.is_(None) | (JobPosting.expires_at >= func.now())
+                    ),
+                    func.count(JobPosting.id).filter(JobPosting.body_is_image.is_(True)),
+                    func.count(JobPosting.id).filter(JobPosting.salary_type.in_(_DISCLOSED)),
+                    func.count(JobPosting.id).filter(JobPosting.field_id.is_(None)),
+                )
+            )
+        ).one()
+        first, last, total, active, image_only, disclosed, unclassified = totals
+
+        by_field = dict(
+            (
+                await self.session.exec(
+                    select(TechField.code, func.count())
+                    .join(JobPosting, JobPosting.field_id == TechField.id)
+                    .group_by(TechField.code)
+                    .order_by(func.count().desc())
+                )
+            ).all()
+        )
+
+        requirement_breakdown = dict(
+            (
+                await self.session.exec(
+                    select(PostingSkill.requirement, func.count()).group_by(
+                        PostingSkill.requirement
+                    )
+                )
+            ).all()
+        )
+
+        company_count = (await self.session.exec(select(func.count()).select_from(Company))).one()
+
+        last_crawl_at = (
+            await self.session.exec(
+                select(func.max(CrawlRun.finished_at)).where(
+                    CrawlRun.kind == RunKind.CRAWL
+                )
+            )
+        ).one()
+
+        return DataCoverage(
+            collected_from=first.date(),
+            collected_to=last.date(),
+            total_postings=total,
+            active_postings=active,
+            image_only_ratio=round(image_only / total, 4) if total else 0.0,
+            salary_disclosure_rate=round(disclosed / total, 4) if total else 0.0,
+            requirement_breakdown=requirement_breakdown,
+            by_field=by_field,
+            unclassified_postings=unclassified,
+            company_count=company_count,
+            last_crawl_at=last_crawl_at,
+        )
+

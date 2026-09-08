@@ -36,7 +36,6 @@ class DataCoverage:
     salary_disclosure_rate: float
     requirement_breakdown: dict[str, int]
     by_field: dict[str, int]
-    # ★ field_id IS NULL 인 공고. by_field 에 넣으면 "미분류" 가 분야인 것처럼
     unclassified_postings: int
     company_count: int
     last_crawl_at: datetime | None
