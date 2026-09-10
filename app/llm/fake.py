@@ -12,8 +12,6 @@ FakeEmbedder
 USE_FAKE_LLM=true 이면 DI 컨테이너가 이 구현을 주입한다.
 """
 
-from __future__ import annotations
-
 import hashlib
 import math
 import struct

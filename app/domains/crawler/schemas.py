@@ -4,8 +4,6 @@
 market 의 컬럼으로 옮기는 변환은 service.py 책임.
 """
 
-from __future__ import annotations
-
 import hashlib
 from datetime import datetime
 from typing import Any
@@ -66,7 +64,7 @@ class RawJob(BaseModel):
     raw: dict = Field(default_factory=dict)
 
     # ── 파생 ──────────────────────────────────────────────────────────────
-    def merged(self, update: dict[str, Any]) -> RawJob:
+    def merged(self, update: dict[str, Any]) -> "RawJob":
         return type(self).model_validate({**self.model_dump(), **update})
 
     def build_description(self) -> str | None:

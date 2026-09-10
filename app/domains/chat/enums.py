@@ -1,7 +1,5 @@
 """chat 테이블의 값 어휘."""
 
-from __future__ import annotations
-
 from enum import StrEnum
 
 

@@ -13,8 +13,6 @@
 중단하고 나머지는 계속 진행한다.
 """
 
-from __future__ import annotations
-
 import abc
 import asyncio
 import json

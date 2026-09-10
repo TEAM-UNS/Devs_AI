@@ -7,8 +7,6 @@
 호출 지점: worker.py(기동 시 1회) · cli.py
 """
 
-from __future__ import annotations
-
 import logging
 
 from app.core.config import get_settings

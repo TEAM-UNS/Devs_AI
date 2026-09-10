@@ -1,7 +1,5 @@
 """LLM · 임베딩 어댑터 예외."""
 
-from __future__ import annotations
-
 from app.core.exception.errors import AppException
 
 

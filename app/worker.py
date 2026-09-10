@@ -15,8 +15,6 @@
     중복 방지         _job_id = f"crawl:{site}:{keyword}:{date}"
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, ClassVar
 

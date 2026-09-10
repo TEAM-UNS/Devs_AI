@@ -29,8 +29,6 @@ ORM 엔티티가 아니라 schemas.py 의 DTO 를 반환한다.
 주의: 표본이 작은 결과에는 sample_size 를 반드시 함께 실어 보낸다.
 """
 
-from __future__ import annotations
-
 import math
 from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence

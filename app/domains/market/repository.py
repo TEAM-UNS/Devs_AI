@@ -8,8 +8,6 @@
     기존 값을 지우면 안 되므로 COALESCE(신규, 기존) 으로 덮어쓴다.
 """
 
-from __future__ import annotations
-
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta

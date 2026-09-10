@@ -12,8 +12,6 @@
 세션을 열어둔 채 HTTP 를 기다리면 커넥션을 오래 붙잡게 된다.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from dataclasses import dataclass, field

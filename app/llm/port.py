@@ -17,8 +17,6 @@ EmbedderPort
 구현체: chat_adapter.py · embed_adapter.py · fake.py
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 

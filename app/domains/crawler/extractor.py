@@ -17,8 +17,6 @@
     본문 등급(BODY)은 우선순위 계산에만 쓰고 저장할 때 preferred 로 내린다.
 """
 
-from __future__ import annotations
-
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
@@ -88,17 +86,19 @@ SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-_DEFAULT_MATCHER: SkillMatcher | None = None
+# ★ 클래스가 아래에 정의돼 있어 문자열로 쓴다. from __future__ import annotations
+#   를 쓰지 않기 때문이다(SQLModel 모델과 기준을 맞춘다).
+_DEFAULT_MATCHER: "SkillMatcher | None" = None
 
 
-def _default_matcher() -> SkillMatcher:
+def _default_matcher() -> "SkillMatcher":
     global _DEFAULT_MATCHER
     if _DEFAULT_MATCHER is None:
         _DEFAULT_MATCHER = SkillMatcher.from_catalog()
     return _DEFAULT_MATCHER
 
 
-def is_valid_body(text: str | None, matcher: SkillMatcher | None = None) -> bool:
+def is_valid_body(text: str | None, matcher: "SkillMatcher | None" = None) -> bool:
     if not text or not text.strip():
         return False
     if SECTION_RE.search(text):
@@ -241,7 +241,7 @@ class SkillMatcher:
 
     # ── 생성자 ────────────────────────────────────────────────────────────
     @classmethod
-    def from_catalog(cls, catalog: Sequence[SkillSeed] = SKILL_CATALOG) -> SkillMatcher:
+    def from_catalog(cls, catalog: Sequence[SkillSeed] = SKILL_CATALOG) -> "SkillMatcher":
         return cls(
             [
                 SkillEntry(
@@ -257,7 +257,7 @@ class SkillMatcher:
         )
 
     @classmethod
-    def from_rows(cls, rows: Iterable[SkillDictionaryRow]) -> SkillMatcher:
+    def from_rows(cls, rows: Iterable[SkillDictionaryRow]) -> "SkillMatcher":
         return cls(
             [
                 SkillEntry(

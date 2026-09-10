@@ -23,8 +23,6 @@
     - 날짜 표기도 목록("...T23:59:59")과 상세("... 23:59:59")가 다르다.
 """
 
-from __future__ import annotations
-
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any

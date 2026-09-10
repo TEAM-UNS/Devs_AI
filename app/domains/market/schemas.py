@@ -4,8 +4,6 @@
 queries.py 를 구현할 때 여기에 추가한다.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from datetime import date, datetime
 

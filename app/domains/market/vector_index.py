@@ -16,8 +16,6 @@
 파라미터는 models.py 의 _HNSW 와 같아야 한다 (m=16, ef_construction=64).
 """
 
-from __future__ import annotations
-
 HNSW_M = 16
 HNSW_EF_CONSTRUCTION = 64
 

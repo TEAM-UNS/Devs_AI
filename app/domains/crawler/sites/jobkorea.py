@@ -23,8 +23,6 @@
     - 봇 탐지가 있다. delay 2.5초 · 동시성 1 을 반드시 유지한다.
 """
 
-from __future__ import annotations
-
 import copy
 import logging
 import re

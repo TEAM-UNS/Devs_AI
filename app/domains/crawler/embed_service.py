@@ -26,8 +26,6 @@
   공고들의 embed_hash 를 닫는다.
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 from collections.abc import Callable, Sequence

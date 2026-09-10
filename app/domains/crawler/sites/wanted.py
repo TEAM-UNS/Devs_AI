@@ -27,8 +27,6 @@
     - skill_tags 는 [{id, title}] 또는 [] 로 온다. 빈 공고가 꽤 있다.
 """
 
-from __future__ import annotations
-
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any

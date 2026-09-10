@@ -10,8 +10,6 @@
 로 확인해 pages 를 조정한다.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from app.domains.crawler.sites.base import BaseSiteCrawler

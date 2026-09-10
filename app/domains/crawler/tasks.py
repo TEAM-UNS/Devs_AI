@@ -20,8 +20,6 @@
   꺼내 쓴다. 태스크 안에서 새로 만들면 커넥션 풀이 태스크 수만큼 생긴다.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime

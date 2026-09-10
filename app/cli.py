@@ -13,8 +13,6 @@ embed 는 arq 없이 임베딩 파이프라인만 돌린다 (태스크와 같은
 부른다). 워커를 띄우지 않고 결과를 확인할 때 쓴다.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json

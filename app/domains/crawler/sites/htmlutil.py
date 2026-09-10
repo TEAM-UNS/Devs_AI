@@ -18,8 +18,6 @@
 클래스명에 의존하는 코드를 이 파일에 추가하지 말 것.
 """
 
-from __future__ import annotations
-
 import copy
 import json
 import logging

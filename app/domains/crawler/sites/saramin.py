@@ -21,8 +21,6 @@
     3순위 셀렉터   — 목록 아이템처럼 라벨이 없는 곳에서만. SELECTORS 에 몰아둔다.
 """
 
-from __future__ import annotations
-
 import copy
 import logging
 import re

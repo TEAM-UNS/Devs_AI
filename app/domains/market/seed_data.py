@@ -29,8 +29,6 @@ cs_aliases (case sensitive)
     뚫린다. 애초에 매칭이 안 되게 막는 쪽이 확실하다.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 from app.domains.market.enums import TechField

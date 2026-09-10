@@ -42,8 +42,6 @@
     posting_chunk.embedding · company.embedding 을 전량 재생성할 것.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import math
