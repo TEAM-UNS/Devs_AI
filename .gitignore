@@ -64,3 +64,4 @@ market-csv-*.zip
 # 로컬 확인·일회성 스크립트. seed_skills.py 는 초기 셋업이라 추적한다.
 scripts/try_queries.py
 scripts/backfill_*.py
+scripts/embed_local/
