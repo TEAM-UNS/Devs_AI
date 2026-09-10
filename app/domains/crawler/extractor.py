@@ -360,9 +360,31 @@ def normalize_company_name(name: str) -> str:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
+# ★ "웹개발" · "SW/솔루션" · "소프트웨어개발" 같은 포괄 카테고리는 넣지 않는다.
+#   특정 분야로 매핑하면 "백엔드/서버개발 + 웹개발" 이 1:1 동점이 되어 오히려
+#   미분류가 는다 (실측: 넣었을 때 분류돼 있던 75건이 미분류로 후퇴).
+#   이런 카테고리는 "개발 직군이다" 정도의 정보만 갖는다.
 _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
     (enums.TechField.SECURITY, ("보안", "security", "해킹", "침해")),
-    (enums.TechField.EMBEDDED, ("임베디드", "embedded", "펌웨어", "firmware", "hw", "제어")),
+    (
+        enums.TechField.EMBEDDED,
+        (
+            "임베디드",
+            "embedded",
+            "펌웨어",
+            "firmware",
+            "hw",
+            "제어",
+            # 사람인 카테고리. "hw" 는 단어 경계를 요구해 "H/W" 를 못 잡는다.
+            "h/w",
+            "hw/",
+            "하드웨어",
+            "반도체",
+            "asic",
+            "fpga",
+            "회로",
+        ),
+    ),
     (enums.TechField.GAME, ("게임", "game")),
     (
         enums.TechField.DATA_AI,
@@ -381,10 +403,22 @@ _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
     ),
     (enums.TechField.MOBILE, ("안드로이드", "android", "ios", "모바일", "앱개발", "크로스플랫폼")),
     (enums.TechField.FRONTEND, ("프론트", "frontend", "퍼블리셔", "웹 개발자")),
-    (enums.TechField.BACKEND, ("서버", "백엔드", "backend", "풀스택")),
+    (enums.TechField.BACKEND, ("서버", "백엔드", "backend", "풀스택", "si개발", "si·", "si/")),
     (
         enums.TechField.DEVOPS,
-        ("devops", "시스템 엔지니어", "인프라", "클라우드", "sre", "네트워크"),
+        (
+            "devops",
+            "시스템 엔지니어",
+            "인프라",
+            "클라우드",
+            "sre",
+            "네트워크",
+            # 사람인은 공백 없이 준다: "SE(시스템엔지니어)"
+            "시스템엔지니어",
+            "system engineer",
+            "시스템관리",
+            "서버관리",
+        ),
     ),
     (enums.TechField.DATA_AI, ("dba", "데이터", "data")),
 )
