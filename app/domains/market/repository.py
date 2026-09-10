@@ -204,6 +204,82 @@ async def count_unmatched_tags(
     return unmatched, total, matched_count
 
 
+# 본문 스캔에서 걸러낼 일반 단어. 기술명이 아니라 영어 산문·직무 용어다.
+# 완전하지 않아도 된다 — 사람이 읽는 후보 목록이라 상위권만 조용해지면 쓸 만하다.
+_BODY_STOPWORDS = frozenset(
+    """
+    and the with for you our are can will not that this from have has your who its all any
+    data code web app apps api apis rest system systems service services server servers
+    software hardware platform platforms framework frameworks library libraries tool tools
+    engineer engineers engineering developer developers development develop team teams
+    experience experienced skill skills work working job jobs role roles position
+    company business product products project projects solution solutions
+    design designing architecture architectures management manage manager
+    support technical technology technologies application applications environment
+    process processes performance quality test testing analysis research
+    new using use used based level high low more most other than time year years
+    http https www com net org github google amazon microsoft apple
+    """.split()
+)
+
+
+async def count_unmatched_body_terms(
+    session: AsyncSession, *, source: str | None = None, min_count: int = 10, limit: int = 200
+) -> list[UnmatchedTag]:
+    """공고 본문에서 사전에 없는데 자주 나오는 기술 후보를 뽑는다.
+
+    ★ count_unmatched_tags 는 tags_raw 만 본다. 그런데 최근에 뜬 기술일수록
+      사이트 태그 목록에는 아직 없고 본문에만 적힌다. 실제로 RAG(611건) ·
+      pgvector(23건) 같은 벡터 스택이 통째로 누락돼 있었는데, 태그 리포트에는
+      한 건도 안 떴다. 본문을 봐야 그 구멍이 보인다.
+
+    태그와 달리 정답이 깔끔하지 않다. 영문 토큰만 보고 불용어를 걸러도 노이즈가
+    남는다. 사람이 읽고 판단하는 후보 목록일 뿐 자동 등재용이 아니다.
+    """
+    where_source = "AND p.source = :source" if source else ""
+    sql = text(
+        f"""
+        WITH words AS (
+            SELECT lower(m[1]) AS term
+            FROM market.job_posting p,
+                 LATERAL regexp_matches(
+                     p.description,
+                     -- 영문/숫자로 시작하고 . + # / - 를 포함할 수 있는 토큰.
+                     -- Node.js · C++ · CI/CD · GPT-4 같은 표기를 살린다.
+                     '[A-Za-z][A-Za-z0-9]*(?:[.+#/-][A-Za-z0-9]+)*',
+                     'g'
+                 ) AS m
+            WHERE p.description IS NOT NULL
+              AND p.body_is_image IS FALSE
+              {where_source}
+        ),
+        filtered AS (
+            SELECT term FROM words
+            WHERE length(term) BETWEEN 3 AND 30
+              AND term NOT IN (SELECT lower(alias) FROM market.skill_alias)
+              AND term NOT IN (SELECT lower(name) FROM market.skill)
+              AND term !~ '^[0-9]'
+              AND term <> ALL(:stopwords)
+        )
+        SELECT term, COUNT(*) AS cnt
+        FROM filtered
+        GROUP BY term
+        HAVING COUNT(*) >= :min_count
+        ORDER BY cnt DESC
+        LIMIT :limit
+        """
+    )
+    params: dict[str, Any] = {
+        "min_count": min_count,
+        "limit": limit,
+        "stopwords": list(_BODY_STOPWORDS),
+    }
+    if source:
+        params["source"] = source
+    rows = (await session.exec(sql.bindparams(**params))).all()
+    return [UnmatchedTag(tag=term, count=cnt) for term, cnt in rows]
+
+
 async def upsert_tech_fields(
     session: AsyncSession, rows: Sequence[tuple[str, str, int]]
 ) -> dict[str, int]:

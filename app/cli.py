@@ -263,6 +263,23 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
         width = max(len(t.tag) for t in unmatched[: args.top])
         for item in unmatched[: args.top]:
             print(f"  {item.tag:<{width}}  {item.count}")
+
+    # ★ 태그만 보면 최근 기술을 놓친다. 사이트 태그 목록에 아직 없고 본문에만
+    #   적히기 때문이다. 실제로 RAG·pgvector 같은 벡터 스택이 통째로 빠져
+    #   있었는데 태그 리포트에는 한 건도 안 떴다.
+    async with get_worker_session() as session:
+        body_terms = await repository.count_unmatched_body_terms(
+            session, source=args.site, min_count=args.min_count, limit=args.top
+        )
+
+    if body_terms:
+        print(f"\n=== 본문에 자주 나오는데 사전에 없는 말 상위 {len(body_terms)}개 ===")
+        print("    (일반 단어가 섞인다. 기술인지 사람이 판단할 것)")
+        width = max(len(t.tag) for t in body_terms)
+        for item in body_terms:
+            print(f"  {item.tag:<{width}}  {item.count}")
+
+    if unmatched or body_terms:
         print("\n검토 후 app/domains/market/seed_data.py 에 추가하고 아래를 실행하세요:")
         print("  uv run python -m scripts.seed_skills && uv run python -m app.cli reparse")
 
@@ -330,6 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     p_report = skills_sub.add_parser("report", help="사전 미매칭 태그 + 재현율")
     p_report.add_argument("--site", choices=sorted(SITES), help="생략하면 전체")
     p_report.add_argument("--top", type=int, default=20)
+    p_report.add_argument(
+        "--min-count", type=int, default=30, help="본문 스캔에서 이 횟수 미만은 버린다"
+    )
     p_report.set_defaults(func=cmd_skills_report)
 
     args = parser.parse_args(argv)

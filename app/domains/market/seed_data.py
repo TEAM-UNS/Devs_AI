@@ -182,6 +182,40 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Hugging Face", "platform", (_D,), ("허깅페이스", "huggingface", "transformers")),
     SkillSeed("OpenCV", "library", (_D, _E), ("오픈시브이", "open cv")),
     SkillSeed("MLflow", "tool", (_D,), ("ml flow", "엠엘플로우")),
+    # ── LLM · 벡터 검색 ────────────────────────────────────────────────
+    # ★ 사전을 크롤링 시작 2주 전에 만들어서 이 계열이 통째로 빠져 있었다.
+    #   본문 실측: RAG 611건 · LangChain 160건 · OpenAI 135건 · Vector DB 131건.
+    #   사이트 태그에는 거의 없고 본문에만 적혀 미매칭 리포트에도 안 잡혔다.
+    SkillSeed(
+        "RAG",
+        "domain",
+        (_D,),
+        ("검색증강생성", "retrieval augmented generation", "retrieval-augmented generation"),
+        # 3글자라 "storage" 같은 단어에 걸릴 수 있다. 문맥 단서를 요구한다.
+        is_ambiguous=True,
+        cs_aliases=("RAG",),
+    ),
+    SkillSeed(
+        "Vector DB",
+        "database",
+        (_D, _B),
+        ("벡터 db", "벡터db", "vectordb", "vector database", "벡터 데이터베이스", "벡터 검색"),
+    ),
+    SkillSeed("pgvector", "database", (_D, _B), ("pg vector", "피지벡터")),
+    SkillSeed("Pinecone", "database", (_D,), ("파인콘",)),
+    SkillSeed("Qdrant", "database", (_D,), ("큐드란트",)),
+    SkillSeed("Milvus", "database", (_D,), ("밀버스",)),
+    SkillSeed("Weaviate", "database", (_D,), ("위비에이트",)),
+    SkillSeed("Chroma", "database", (_D,), ("chromadb", "크로마")),
+    SkillSeed("FAISS", "library", (_D,), ("파이스",)),
+    SkillSeed("LlamaIndex", "framework", (_D,), ("라마인덱스", "llama index", "gpt index")),
+    SkillSeed("OpenAI API", "platform", (_D,), ("openai", "오픈에이아이", "gpt api", "chatgpt api")),
+    SkillSeed(
+        "Embedding",
+        "domain",
+        (_D,),
+        ("임베딩", "embeddings", "벡터 임베딩", "text embedding"),
+    ),
     SkillSeed(
         "AI/ML",
         "domain",
