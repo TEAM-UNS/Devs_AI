@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
@@ -360,9 +360,31 @@ def normalize_company_name(name: str) -> str:
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
+# ★ "웹개발" · "SW/솔루션" · "소프트웨어개발" 같은 포괄 카테고리는 넣지 않는다.
+#   특정 분야로 매핑하면 "백엔드/서버개발 + 웹개발" 이 1:1 동점이 되어 오히려
+#   미분류가 는다 (실측: 넣었을 때 분류돼 있던 75건이 미분류로 후퇴).
+#   이런 카테고리는 "개발 직군이다" 정도의 정보만 갖는다.
 _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
     (enums.TechField.SECURITY, ("보안", "security", "해킹", "침해")),
-    (enums.TechField.EMBEDDED, ("임베디드", "embedded", "펌웨어", "firmware", "hw", "제어")),
+    (
+        enums.TechField.EMBEDDED,
+        (
+            "임베디드",
+            "embedded",
+            "펌웨어",
+            "firmware",
+            "hw",
+            "제어",
+            # 사람인 카테고리. "hw" 는 단어 경계를 요구해 "H/W" 를 못 잡는다.
+            "h/w",
+            "hw/",
+            "하드웨어",
+            "반도체",
+            "asic",
+            "fpga",
+            "회로",
+        ),
+    ),
     (enums.TechField.GAME, ("게임", "game")),
     (
         enums.TechField.DATA_AI,
@@ -381,23 +403,74 @@ _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
     ),
     (enums.TechField.MOBILE, ("안드로이드", "android", "ios", "모바일", "앱개발", "크로스플랫폼")),
     (enums.TechField.FRONTEND, ("프론트", "frontend", "퍼블리셔", "웹 개발자")),
-    (enums.TechField.BACKEND, ("서버", "백엔드", "backend", "풀스택")),
+    (enums.TechField.BACKEND, ("서버", "백엔드", "backend", "풀스택", "si개발", "si·", "si/")),
     (
         enums.TechField.DEVOPS,
-        ("devops", "시스템 엔지니어", "인프라", "클라우드", "sre", "네트워크"),
+        (
+            "devops",
+            "시스템 엔지니어",
+            "인프라",
+            "클라우드",
+            "sre",
+            "네트워크",
+            # 사람인은 공백 없이 준다: "SE(시스템엔지니어)"
+            "시스템엔지니어",
+            "system engineer",
+            "시스템관리",
+            "서버관리",
+        ),
     ),
     (enums.TechField.DATA_AI, ("dba", "데이터", "data")),
 )
 
 
-def map_tech_field(categories: list[str]) -> enums.TechField | None:
-    joined = " / ".join(categories).lower()
-    if not joined.strip():
-        return None
+# ★ 부분문자열로 매칭하면 엉뚱한 단어에 걸리는 키워드. 단어 경계를 요구한다.
+#   "ai" 는 Sustainable · Maintainer 에 걸리고, "hw"·"sre"·"c" 도 마찬가지다.
+#   실측: "지속가능(Sustainable) 플랫폼 서버 개발" 이 data_ai 로 분류됐다.
+_WORD_BOUNDED = frozenset({"ai", "hw", "sre", "c", "ml 엔지니어"})
+
+
+def _keyword_hits(keyword: str, text: str) -> bool:
+    if keyword in _WORD_BOUNDED:
+        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+    return keyword in text
+
+
+def _vote(text_value: str) -> enums.TechField | None:
+    """문자열 하나가 가리키는 분야. _FIELD_RULES 순서로 첫 매칭."""
+    lowered = (text_value or "").lower()
     for tech_field, keywords in _FIELD_RULES:
-        if any(kw in joined for kw in keywords):
+        if any(_keyword_hits(kw, lowered) for kw in keywords):
             return tech_field
     return None
+
+
+def map_tech_field(categories: list[str], title: str = "") -> enums.TechField | None:
+    """카테고리마다 한 표씩 매겨 최다 득표 분야를 고른다.
+
+    ★ 카테고리를 이어붙여 첫 매칭을 쓰면 안 된다. 사이트가 한 공고에 카테고리를
+      여러 개 주는데(2개 이상이 40%), _FIELD_RULES 배열에서 위에 있다는 이유만으로
+      분야가 정해진다. 실제로 ['서버/백엔드 개발자', '프론트엔드 개발자'] 공고가
+      전부 frontend 로 갔다 — FRONTEND 규칙이 BACKEND 보다 위에 있어서다.
+
+    카테고리가 비었으면(원티드는 전량 빈 배열) 제목으로 판단하고,
+    동점이면 제목이 가리키는 쪽을 고른다. 제목도 못 정하면 미분류로 둔다.
+    """
+    votes: Counter[enums.TechField] = Counter()
+    for category in categories:
+        if (hit := _vote(category)) is not None:
+            votes[hit] += 1
+
+    if not votes:
+        return _vote(title)
+
+    top, count = votes.most_common(1)[0]
+    tied = [field for field, vote_count in votes.items() if vote_count == count]
+    if len(tied) == 1:
+        return top
+
+    from_title = _vote(title)
+    return from_title if from_title in tied else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

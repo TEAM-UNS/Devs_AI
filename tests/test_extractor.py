@@ -205,18 +205,53 @@ def test_normalize_company_name(raw, expected):
     ("categories", "expected"),
     [
         (["서버/백엔드 개발자"], TechField.BACKEND),
-        (["DBA", "devops/시스템 엔지니어", "서버/백엔드 개발자"], TechField.BACKEND),
         (["게임 서버 개발자"], TechField.GAME),
         (["인공지능/머신러닝"], TechField.DATA_AI),
         (["안드로이드 개발자"], TechField.MOBILE),
         (["정보보안 담당자"], TechField.SECURITY),
         (["HW/임베디드"], TechField.EMBEDDED),
+        # 최다 득표. 백엔드가 2표, 나머지가 1표씩이다.
+        (["서버/백엔드 개발자", "백엔드 엔지니어", "프론트엔드 개발자"], TechField.BACKEND),
         (["개발 PM"], None),
         ([], None),
     ],
 )
 def test_map_tech_field(categories, expected):
     assert map_tech_field(categories) is expected
+
+
+# ★ 동점 처리 — 사이트가 한 공고에 카테고리를 여러 개 준다(2개 이상이 40%).
+#   예전에는 _FIELD_RULES 배열 순서로 첫 매칭을 썼고, 그래서
+#   ['서버/백엔드 개발자', '프론트엔드 개발자'] 가 전부 frontend 로 갔다.
+@pytest.mark.parametrize(
+    ("categories", "title", "expected"),
+    [
+        # 1:1 동점이면 제목이 가른다.
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "Python 백엔드 개발자", TechField.BACKEND),
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "프론트엔드 개발자", TechField.FRONTEND),
+        # 제목도 못 정하면 미분류. 억지로 하나를 고르면 그게 곧 편향이다.
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "광학 어플리케이션 엔지니어", None),
+        (["DBA", "devops/시스템 엔지니어", "서버/백엔드 개발자"], "", None),
+        # 카테고리가 비면 제목으로 판단한다(원티드는 전량 빈 배열).
+        ([], "웹(Web) 백엔드 개발자", TechField.BACKEND),
+        ([], "[개발 본부] DevOps Engineer", TechField.DEVOPS),
+        ([], "Senior Engineer", None),
+    ],
+)
+def test_map_tech_field_uses_title(categories, title, expected):
+    assert map_tech_field(categories, title) is expected
+
+
+# ★ "ai" 가 Sustainable · Maintainer 에 부분문자열로 걸려 data_ai 로 새던 것.
+@pytest.mark.parametrize(
+    "title",
+    [
+        "지속가능(Sustainable) 플랫폼 서버 개발",
+        "메인터넌스 담당 서버 엔지니어",
+    ],
+)
+def test_ai_keyword_needs_word_boundary(title):
+    assert map_tech_field([], title) is TechField.BACKEND
 
 
 # 명세 2-4 "연봉 정규화 규칙" 표 전체.

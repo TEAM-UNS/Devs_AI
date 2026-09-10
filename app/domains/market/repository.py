@@ -280,13 +280,15 @@ async def replace_skill_fields(
 
 async def iter_postings_for_reparse(
     session: AsyncSession, *, source: str | None = None, limit: int | None = None
-) -> list[tuple[int, str | None, list[str], dict[str, Any], int | None]]:
+) -> list[tuple[int, str | None, list[str], dict[str, Any], int | None, str]]:
     stmt = select(
         JobPosting.id,
         JobPosting.description,
         JobPosting.tags_raw,
         JobPosting.raw_fields,
         JobPosting.field_id,
+        # 분야 분류의 보조 신호. 카테고리가 비었거나 동점일 때 제목으로 가른다.
+        JobPosting.title,
     )
     if source:
         stmt = stmt.where(JobPosting.source == source)
@@ -294,8 +296,8 @@ async def iter_postings_for_reparse(
     if limit:
         stmt = stmt.limit(limit)
     return [
-        (pid, desc, tags or [], raw or {}, field_id)
-        for pid, desc, tags, raw, field_id in (await session.exec(stmt)).all()
+        (pid, desc, tags or [], raw or {}, field_id, title or "")
+        for pid, desc, tags, raw, field_id, title in (await session.exec(stmt)).all()
     ]
 
 

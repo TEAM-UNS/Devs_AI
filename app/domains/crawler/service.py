@@ -87,7 +87,7 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
     log.info("재추출 대상 %d건 (사전 %d스킬)", len(targets), len(matcher.entries))
 
     async with get_worker_session() as session:
-        for posting_id, description, tags, raw_fields, old_field_id in targets:
+        for posting_id, description, tags, raw_fields, old_field_id, title in targets:
             try:
                 async with session.begin_nested():
                     hits = matcher.extract(description=description, tags=tags)
@@ -97,7 +97,9 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
                         [(h.skill_id, h.requirement, h.mentions) for h in hits],
                     )
 
-                    tech_field = extractor.map_tech_field(raw_fields.get("job_categories") or [])
+                    tech_field = extractor.map_tech_field(
+                        raw_fields.get("job_categories") or [], title
+                    )
                     new_field_id = field_ids.get(tech_field.value) if tech_field else None
                     if new_field_id != old_field_id:
                         await repository.update_posting_field(session, posting_id, new_field_id)
@@ -329,7 +331,7 @@ class CrawlService:
     ) -> int:
         company_id = await self._save_company(session, job)
 
-        tech_field = extractor.map_tech_field(job.job_categories)
+        tech_field = extractor.map_tech_field(job.job_categories, job.title)
         description = job.build_description()
         salary_min, salary_max, salary_type, salary_period = extractor.parse_salary(job.salary_raw)
 

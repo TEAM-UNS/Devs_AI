@@ -67,13 +67,31 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 def _titles(tags: Any) -> list[str]:
+    """태그 배열에서 표시 문자열만 뽑는다.
+
+    ★ 키 이름이 응답마다 다르다. company_tags·attraction_tags 는 "title" 인데
+      skill_tags·category_tag.child_tags 는 "text" 다. "text" 를 빠뜨렸던 탓에
+      원티드 공고 전량(1,349건)의 스택 태그가 조용히 버려지고 있었다
+      — tags_raw 가 비어도 수집은 성공으로 끝나서 드러나지 않았다.
+    """
     result: list[str] = []
     for tag in tags or []:
-        if isinstance(tag, dict) and (title := tag.get("title") or tag.get("name")):
+        if isinstance(tag, dict) and (title := tag.get("title") or tag.get("name") or tag.get("text")):
             result.append(str(title).strip())
         elif isinstance(tag, str) and tag.strip():
             result.append(tag.strip())
     return result
+
+
+def _job_categories(category_tag: Any) -> list[str]:
+    """job.category_tag.child_tags → 직무 카테고리 목록.
+
+    parent_tag 는 "개발" 고정이라 분류에 쓸 수 없다. child_tags 가
+    "서버 개발자" · "머신러닝 엔지니어" 같은 실제 직무다.
+    """
+    if not isinstance(category_tag, dict):
+        return []
+    return _titles(category_tag.get("child_tags"))
 
 
 def _location(address: Any) -> str | None:
@@ -176,6 +194,7 @@ class WantedCrawler(BaseSiteCrawler):
             "title": detail.get("position") or job.title,
             "company_name": company.get("name") or job.company_name,
             "tech_stacks": _titles(posting.get("skill_tags")) or job.tech_stacks,
+            "job_categories": _job_categories(posting.get("category_tag")) or job.job_categories,
             "locations": [loc for loc in [_location(posting.get("address"))] if loc]
             or job.locations,
             "career_min": posting.get("annual_from", job.career_min),
