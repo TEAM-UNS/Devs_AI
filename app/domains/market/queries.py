@@ -34,10 +34,21 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
-from sqlmodel import func, select
+from sqlmodel import (
+    func,
+    select,
+    or_,
+    and_,
+)
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.domains.market.enums import CareerLevel, CompanySize, Requirement, RunKind, SalaryType
+from app.domains.market.enums import (
+    CareerLevel,
+    CompanySize,
+    Requirement,
+    RunKind,
+    SalaryType,
+)
 
 from app.domains.market.enums import TechField as TechFieldCode
 from app.domains.market.models import (
@@ -47,8 +58,14 @@ from app.domains.market.models import (
     PostingSkill,
     Skill,
     TechField,
+    SkillAlias,
 )
-from app.domains.market.schemas import DataCoverage, PopularSkills, SkillCount
+from app.domains.market.schemas import (
+    DataCoverage,
+    PopularSkills,
+    SkillCount,
+    SkillDemand,
+)
 
 
 # 공용 표현식 
@@ -223,3 +240,114 @@ class ChatQueries:
             total_postings=total,
             days=days or 0,
         )
+
+    async def resolve_skill_name(self, query: str) -> Optional[tuple[int, str]]:
+        needle = query.strip()
+        row = (
+            await self.session.exec(
+                select(Skill.id, Skill.name)
+                .outerjoin(SkillAlias, SkillAlias.skill_id == Skill.id)
+                .where(
+                    or_(
+                        func.lower(Skill.name) == needle.lower(),
+                        and_(
+                            SkillAlias.case_sensitive.is_(False),
+                            func.lower(SkillAlias.alias) == needle.lower(),
+                        ),
+                        and_(SkillAlias.case_sensitive.is_(True),
+                             SkillAlias.alias == needle
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+        ).first()
+        return (row[0], row[1]) if row else None
+
+    async def skill_demand(self, skill_query: str) -> Optional[SkillDemand]:
+        found = await self.resolve_skill_name(skill_query)
+        if found is None:
+            return None
+        skill_id, skill_name = found
+
+        base = [PostingSkill.skill_id == skill_id, PostingSkill.requirement.in_(_DEMAND)]
+        postings = func.count(func.distinct(PostingSkill.posting_id))
+
+        def scoped():
+            return (
+                select(postings)
+                .select_from(PostingSkill)
+                .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+            )
+
+        total = (await self.session.exec(scoped().where(*base))).one()
+
+        by_field = dict(
+            (
+                await self.session.exec(
+                    select(TechField.code, postings)
+                    .select_from(PostingSkill)
+                    .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+                    .join(TechField, TechField.id == JobPosting.field_id)
+                    .where(*base)
+                    .group_by(TechField.code)
+                    .order_by(postings.desc())
+                )
+            ).all()
+        )
+
+        by_size = dict(
+            (
+                await self.session.exec(
+                    select(Company.size_type, postings)
+                    .select_from(PostingSkill)
+                    .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+                    .join(Company, Company.id == JobPosting.company_id)
+                    .where(*base)
+                    .group_by(Company.size_type)
+                    .order_by(postings.desc())
+                )
+            ).all()
+        )
+
+        career = self._career_conditions()
+        row = (
+            await self.session.exec(
+                select(*[postings.filter(cond).label(name) for name, cond in career.items()])
+                .select_from(PostingSkill)
+                .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+                .where(*base)
+            )
+        ).one()
+        by_career = dict(zip(career.keys(), row, strict=True))
+
+        by_requirement = dict(
+            (
+                await self.session.exec(
+                    select(PostingSkill.requirement, func.count())
+                    .where(*base)
+                    .group_by(PostingSkill.requirement)
+                    .order_by(func.count().desc())
+                )
+            ).all()
+        )
+
+        return SkillDemand(
+            skill=skill_name,
+            total_postings=total,
+            by_field=by_field,
+            by_size=by_size,
+            by_career=by_career,
+            by_requirement=by_requirement,
+        )
+
+    @staticmethod
+    def _career_conditions() -> dict[str, Any]:
+        conditions: dict[str, Any] = {}
+        for level in CareerLevel:
+            low, high = _CAREER_RANGES[level]
+            parts = [or_(JobPosting.career_max.is_(None), JobPosting.career_max >= low)]
+            if high is not None:
+                parts.append(func.coalesce(JobPosting.career_min, 0) <= high)
+            conditions[level.value] = and_(*parts)
+        return conditions

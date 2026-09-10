@@ -55,3 +55,13 @@ class PopularSkills:
     analyzed_postings: int
     total_postings: int
     days: int
+
+
+@dataclass(frozen=True)
+class SkillDemand:
+    skill: str
+    total_postings: int
+    by_field: dict[str, int]
+    by_size: dict[str, int]
+    by_career: dict[str, int]
+    by_requirement: dict[str, int]
