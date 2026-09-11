@@ -13,7 +13,7 @@ ORM 엔티티가 아니라 schemas.py 의 DTO 를 반환한다.
 기술 관계
     related_skills(skill, field, requirement, top)   동시출현 + NPMI
     skill_demand(skill)                              분야·규모·경력 분포
-    resolve_skill(query)                             skill.embedding 코사인
+    resolve_skill(query_vec)                         skill.embedding 코사인
 
 기업
     company_profile(name)          동명 다수면 후보 목록 반환
@@ -41,10 +41,13 @@ from sqlmodel import (
     select,
     text,
 )
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.domains.market import similarity
 from app.domains.market.enums import (
     CareerLevel,
+    ChunkSection,
     CompanySize,
     Requirement,
     RunKind,
@@ -56,6 +59,7 @@ from app.domains.market.models import (
     Company,
     CrawlRun,
     JobPosting,
+    PostingChunk,
     PostingSkill,
     Skill,
     TechField,
@@ -65,19 +69,24 @@ from app.domains.market.schemas import (
     CompanyCandidate,
     CompanyComparison,
     CompanyComparisons,
+    CompanyHit,
     CompanyLookup,
     CompanyProfile,
+    PostingHit,
     RelatedSkill,
     RelatedSkills,
     RisingSkill,
     RisingSkills,
     SalaryStats,
     SegmentStacks,
+    SimilarCompanies,
+    SimilarCompany,
     SkillGap,
     SkillGapItem,
     StacksBySegment,
     DataCoverage,
     PopularSkills,
+    SkillCandidate,
     SkillCount,
     SkillDemand,
 )
@@ -103,6 +112,13 @@ _RISING_MIN_COUNT = 5
 # NPMI 계산에 넣을 최소 동시출현 횟수. 1~2회 함께 나온 쌍은 희소할수록 PMI 가
 # 커지는 성질 때문에 높게 계산되지만 실제로는 우연이다.
 _NPMI_MIN_COOCCURRENCE = 3
+
+# 공고당 청크가 ~3개라, 공고 top 개를 채우려면 청크를 넉넉히 뽑아 중복을 걷어낸다.
+_SEARCH_CHUNKS_PER_POSTING = 4
+
+_EVIDENCE_CHARS = 200
+
+_SHARED_SKILLS = 5
 
 # 집계에 들어간 표본이 이보다 적으면 low_confidence 를 실어 보낸다. 툴 결과를
 # 읽는 것은 사람이 아니라 LLM 이라, 근거를 주지 않으면 표본 3건짜리 중앙값도
@@ -300,6 +316,21 @@ class ChatQueries:
             )
         ).first()
         return (row[0], row[1]) if row else None
+
+    async def resolve_skill(
+        self, query_vec: Sequence[float], top: int = 5
+    ) -> list[SkillCandidate]:
+        # 사전 일치(resolve_skill_name)가 실패했을 때의 후보 제시용. 165행이라 인덱스 없이 스캔한다.
+        distance = Skill.embedding.cosine_distance(list(query_vec))
+        rows = (
+            await self.session.exec(
+                select(Skill.name, distance)
+                .where(Skill.embedding.is_not(None))
+                .order_by(distance)
+                .limit(top)
+            )
+        ).all()
+        return [SkillCandidate(skill=name, similarity=round(1 - d, 4)) for name, d in rows]
 
     async def skill_demand(self, skill_query: str) -> Optional[SkillDemand]:
         found = await self.resolve_skill_name(skill_query)
@@ -910,6 +941,307 @@ class ChatQueries:
 
         shared = sorted(set.intersection(*skill_sets)) if skill_sets else []
         return CompanyComparisons(companies=results, shared_skills=shared)
+
+    # ── 유사 기업 ──────────────────────────────────────────────────────────
+    async def similar_companies(
+        self, company_id: int, top: int = 5
+    ) -> Optional[SimilarCompanies]:
+        has_text = func.coalesce(
+            func.nullif(func.btrim(Company.description), ""),
+            func.nullif(func.btrim(Company.business_content), ""),
+        ).is_not(None)
+
+        target = (
+            await self.session.exec(
+                select(
+                    Company.name,
+                    Company.size_type,
+                    Company.employee_count,
+                    Company.profile_embedding,
+                    has_text,
+                ).where(Company.id == company_id)
+            )
+        ).first()
+        if target is None:
+            return None
+        name, size_type, employees, embedding, target_has_text = target
+
+        target_has_stack, stacks = await self._stack_cosines(company_id)
+
+        described: dict[int, float] = {}
+        if target_has_text and embedding is not None:
+            distance = Company.profile_embedding.cosine_distance(embedding)
+            described = dict(
+                (
+                    await self.session.exec(
+                        select(Company.id, 1 - distance).where(
+                            has_text,
+                            Company.profile_embedding.is_not(None),
+                            Company.id != company_id,
+                        )
+                    )
+                ).all()
+            )
+
+        candidates = set(stacks) | set(described)
+        if not candidates:
+            return SimilarCompanies(company_id=company_id, name=name, items=[])
+
+        meta = (
+            await self.session.exec(
+                select(Company.id, Company.name, Company.size_type, Company.employee_count).where(
+                    Company.id.in_(candidates)
+                )
+            )
+        ).all()
+
+        percentiles = similarity.percentile_ranks(described)
+        scored = []
+        for other_id, other_name, other_size, other_employees in meta:
+            stack, shared = stacks.get(other_id, (0.0 if target_has_stack else None, []))
+            percentile = percentiles.get(other_id)
+            # 소개글 없는 후보는 중립값. 기준 기업에 소개글이 없으면 설명 항목 자체를 뺀다.
+            description_score = None
+            if described:
+                description_score = similarity.NEUTRAL if percentile is None else percentile
+            size = similarity.size_proximity(employees, size_type, other_employees, other_size)
+            score = similarity.combine(stack, description_score, size)
+            scored.append(
+                (
+                    score,
+                    stack,
+                    described.get(other_id),
+                    percentile,
+                    size,
+                    other_id,
+                    other_name,
+                    other_size,
+                    shared,
+                )
+            )
+        scored.sort(key=lambda r: (-r[0], -(r[1] or 0), r[6]))
+
+        def rounded(value: float | None) -> float | None:
+            return round(value, 4) if value is not None else None
+
+        return SimilarCompanies(
+            company_id=company_id,
+            name=name,
+            items=[
+                SimilarCompany(
+                    rank=index,
+                    company_id=other_id,
+                    name=other_name,
+                    size_type=str(other_size),
+                    score=round(score, 4),
+                    stack_cosine=rounded(stack),
+                    description_cosine=rounded(description),
+                    description_percentile=rounded(percentile),
+                    size_proximity=rounded(size),
+                    shared_skills=shared,
+                )
+                for index, (
+                    score,
+                    stack,
+                    description,
+                    percentile,
+                    size,
+                    other_id,
+                    other_name,
+                    other_size,
+                    shared,
+                ) in enumerate(scored[:top], start=1)
+            ],
+        )
+
+    async def _stack_cosines(
+        self, company_id: int
+    ) -> tuple[bool, dict[int, tuple[float, list[str]]]]:
+        """기업별 요구 스킬 공고수 벡터의 코사인. 기준 기업과 스킬이 하나라도 겹치는 기업만."""
+        counts = (
+            select(
+                JobPosting.company_id.label("company_id"),
+                PostingSkill.skill_id.label("skill_id"),
+                func.count(func.distinct(PostingSkill.posting_id)).label("n"),
+            )
+            .select_from(PostingSkill)
+            .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
+            .join(Skill, Skill.id == PostingSkill.skill_id)
+            .where(
+                JobPosting.company_id.is_not(None),
+                PostingSkill.requirement.in_(_DEMAND),
+                Skill.is_common.is_(False),
+            )
+            .group_by(JobPosting.company_id, PostingSkill.skill_id)
+            .cte("counts")
+        )
+        target = (
+            select(counts.c.skill_id, counts.c.n)
+            .where(counts.c.company_id == company_id)
+            .cte("target")
+        )
+        norms = (
+            select(counts.c.company_id, func.sqrt(func.sum(counts.c.n * counts.c.n)).label("norm"))
+            .group_by(counts.c.company_id)
+            .cte("norms")
+        )
+
+        target_norm = (
+            await self.session.exec(select(func.sqrt(func.sum(target.c.n * target.c.n))))
+        ).one()
+        if not target_norm:
+            return False, {}
+
+        contribution = counts.c.n * target.c.n
+        rows = (
+            await self.session.exec(
+                select(
+                    counts.c.company_id,
+                    func.sum(contribution) / norms.c.norm,
+                    func.array_agg(aggregate_order_by(Skill.name, contribution.desc())),
+                )
+                .select_from(counts)
+                .join(target, target.c.skill_id == counts.c.skill_id)
+                .join(norms, norms.c.company_id == counts.c.company_id)
+                .join(Skill, Skill.id == counts.c.skill_id)
+                .where(counts.c.company_id != company_id)
+                .group_by(counts.c.company_id, norms.c.norm)
+            )
+        ).all()
+        return True, {
+            other_id: (float(dot) / float(target_norm), list(names[:_SHARED_SKILLS]))
+            for other_id, dot, names in rows
+        }
+
+    # ── 기업 검색 ──────────────────────────────────────────────────────────
+    async def search_companies(
+        self,
+        query_vec: Sequence[float],
+        size_type: Optional[CompanySize] = None,
+        field: Optional[TechFieldCode] = None,
+        top: int = 10,
+    ) -> list[CompanyHit]:
+        await self.session.exec(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+
+        filters: list[Any] = [Company.profile_embedding.is_not(None)]
+        if size_type is not None:
+            filters.append(Company.size_type == size_type)
+        if field is not None:
+            # 그 분야 공고를 한 건이라도 낸 기업
+            filters.append(
+                Company.id.in_(
+                    select(JobPosting.company_id).where(
+                        *self._posting_filters(
+                            field=field, size_type=None, career_level=None, days=None
+                        )
+                    )
+                )
+            )
+
+        postings = (
+            select(func.count())
+            .select_from(JobPosting)
+            .where(JobPosting.company_id == Company.id)
+            .correlate(Company)
+            .scalar_subquery()
+        )
+        evidence = func.left(
+            func.coalesce(Company.description, Company.business_content, Company.industry),
+            _EVIDENCE_CHARS,
+        )
+        distance = Company.profile_embedding.cosine_distance(list(query_vec))
+        rows = (
+            await self.session.exec(
+                select(
+                    Company.id,
+                    Company.name,
+                    Company.size_type,
+                    Company.industry,
+                    postings,
+                    evidence,
+                    distance,
+                )
+                .where(*filters)
+                .order_by(distance)
+                .limit(top)
+            )
+        ).all()
+
+        return [
+            CompanyHit(
+                company_id=company_id,
+                name=name,
+                size_type=str(size),
+                industry=industry,
+                posting_count=count,
+                evidence=snippet,
+                similarity=round(1 - d, 4),
+            )
+            for company_id, name, size, industry, count, snippet, d in sorted(
+                rows, key=lambda r: r[6]
+            )
+        ]
+
+    # ── 공고 검색 ──────────────────────────────────────────────────────────
+    async def search_postings(
+        self,
+        query_vec: Sequence[float],
+        field: Optional[TechFieldCode] = None,
+        career_max: Optional[int] = None,
+        section: Optional[ChunkSection] = None,
+        top: int = 10,
+        active_only: bool = True,
+    ) -> list[PostingHit]:
+        # 필터가 있으면 HNSW 가 ef_search(40)개만 보고 걸러 top 보다 적게 줄 수 있다.
+        # iterative_scan 은 모자라면 인덱스를 더 읽는다 (pgvector 0.8+).
+        await self.session.exec(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+
+        filters = self._posting_filters(field=field, size_type=None, career_level=None, days=None)
+        if career_max is not None:
+            filters.append(func.coalesce(JobPosting.career_min, 0) <= career_max)
+        if section is not None:
+            filters.append(PostingChunk.section == section)
+        if active_only:
+            filters.append(JobPosting.expires_at.is_(None) | (JobPosting.expires_at >= func.now()))
+
+        distance = PostingChunk.embedding.cosine_distance(list(query_vec))
+        rows = (
+            await self.session.exec(
+                select(
+                    JobPosting.id,
+                    JobPosting.title,
+                    func.coalesce(Company.name, JobPosting.company_name_raw),
+                    JobPosting.raw_fields["url"].astext,
+                    PostingChunk.section,
+                    PostingChunk.content,
+                    distance,
+                )
+                .select_from(PostingChunk)
+                .join(JobPosting, JobPosting.id == PostingChunk.posting_id)
+                .outerjoin(Company, Company.id == JobPosting.company_id)
+                .where(*filters)
+                .order_by(distance)
+                .limit(top * _SEARCH_CHUNKS_PER_POSTING)
+            )
+        ).all()
+
+        # relaxed_order 는 순서가 약간 어긋날 수 있어 다시 정렬한다.
+        # 같은 공고를 여러 사이트가 올린 경우가 있어 (회사, 제목) 으로 걷어낸다.
+        best: dict[tuple[str | None, str], Any] = {}
+        for row in sorted(rows, key=lambda r: r[6]):
+            best.setdefault((row[2], row[1].strip()), row)
+        return [
+            PostingHit(
+                posting_id=posting_id,
+                title=title,
+                company=company,
+                url=url,
+                section=str(chunk_section),
+                chunk=content,
+                similarity=round(1 - d, 4),
+            )
+            for posting_id, title, company, url, chunk_section, content, d in list(best.values())[:top]
+        ]
 
     # ── 갭 분석 ────────────────────────────────────────────────────────────
     async def skill_gap(
