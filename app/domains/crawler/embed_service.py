@@ -13,8 +13,7 @@
     셋 다 비어 있으면 스킵
 
 스킬 임베딩
-    skill.name + aliases. 200행 규모라 앱 시작 시 메모리로 로드해 쓴다
-    ★ 챗봇 작업(질의 → 스킬명 해소)에서 붙인다.
+    skill.name + aliases. embed_hash 컬럼이 없어 매번 전량 다시 만든다 (200행 규모)
 
 백필
     누락·실패분 최대 EMBED_BACKFILL_LIMIT(500)건/회
@@ -56,6 +55,7 @@ class EmbedStats:
     chunks_reused: int = 0
     chunks_deleted: int = 0
     companies: int = 0
+    skills: int = 0
     api_calls: int = 0
     empty: int = 0
     errors: int = 0
@@ -280,6 +280,54 @@ async def embed_companies(
         "기업 임베딩 완료 — targets=%d companies=%d api_calls=%d errors=%d",
         stats.targets,
         stats.companies,
+        stats.api_calls,
+        stats.errors,
+    )
+    return stats
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+def build_skill_text(name: str, aliases: Sequence[str]) -> str:
+    return ", ".join([name, *aliases])
+
+
+async def embed_skills(
+    session_factory: SessionFactory,
+    embedder: EmbedderPort,
+    *,
+    batch_size: int | None = None,
+) -> EmbedStats:
+    size = batch_size or get_settings().embed_batch_size
+    stats = EmbedStats()
+
+    async with session_factory() as session:
+        rows = await repository.list_skills_with_aliases(session)
+    stats.targets = len(rows)
+
+    for start in range(0, len(rows), size):
+        window = rows[start : start + size]
+        try:
+            vectors = await embedder.embed_documents(
+                [build_skill_text(name, aliases) for _, name, aliases in window]
+            )
+            stats.api_calls += 1
+        except Exception as exc:
+            log.exception("스킬 임베딩 실패 — %d건", len(window))
+            stats.errors += len(window)
+            stats.error_messages.append(repr(exc))
+            continue
+
+        async with session_factory() as session:
+            for (skill_id, _, _), vector in zip(window, vectors, strict=True):
+                await repository.set_skill_embedding(session, skill_id, embedding=vector)
+                stats.skills += 1
+            await session.commit()
+
+    log.info(
+        "스킬 임베딩 완료 — targets=%d skills=%d api_calls=%d errors=%d",
+        stats.targets,
+        stats.skills,
         stats.api_calls,
         stats.errors,
     )

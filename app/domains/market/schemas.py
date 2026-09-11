@@ -64,6 +64,13 @@ class SkillDemand:
     by_career: dict[str, int]
     by_requirement: dict[str, int]
 
+
+@dataclass(frozen=True)
+class SkillCandidate:
+    skill: str
+    similarity: float
+
+
 @dataclass(frozen=True)
 class RisingSkill:
     rank: int
@@ -174,6 +181,51 @@ class CompanyComparison:
 class CompanyComparisons:
     companies: list[CompanyComparison]
     shared_skills: list[str]
+
+
+@dataclass(frozen=True)
+class SimilarCompany:
+    rank: int
+    company_id: int
+    name: str
+    size_type: str
+    score: float
+    # None 이면 값이 없는 항목. 설명은 점수에 백분위를 쓰고, 없으면 중립 0.5 로 친다.
+    stack_cosine: float | None
+    description_cosine: float | None
+    description_percentile: float | None
+    size_proximity: float | None
+    shared_skills: list[str]
+
+
+@dataclass(frozen=True)
+class SimilarCompanies:
+    company_id: int
+    name: str
+    items: list[SimilarCompany]
+
+
+@dataclass(frozen=True)
+class CompanyHit:
+    company_id: int
+    name: str
+    size_type: str
+    industry: str | None
+    posting_count: int
+    # 임베딩한 기업 소개의 앞부분. 기업당 벡터가 하나라 문장 단위 근거는 없다.
+    evidence: str | None
+    similarity: float
+
+
+@dataclass(frozen=True)
+class PostingHit:
+    posting_id: int
+    title: str
+    company: str | None
+    url: str | None
+    section: str
+    chunk: str
+    similarity: float
 
 
 @dataclass(frozen=True)
