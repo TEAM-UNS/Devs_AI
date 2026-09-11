@@ -673,6 +673,30 @@ async def set_company_embedding(
     )
 
 
+async def list_skills_with_aliases(session: AsyncSession) -> list[tuple[int, str, list[str]]]:
+    rows = (
+        await session.exec(
+            select(Skill.id, Skill.name, SkillAlias.alias)
+            .outerjoin(SkillAlias, SkillAlias.skill_id == Skill.id)
+            .order_by(Skill.id, SkillAlias.alias)
+        )
+    ).all()
+    grouped: dict[int, tuple[str, list[str]]] = {}
+    for skill_id, name, alias in rows:
+        entry = grouped.setdefault(skill_id, (name, []))
+        if alias is not None:
+            entry[1].append(alias)
+    return [(skill_id, name, aliases) for skill_id, (name, aliases) in grouped.items()]
+
+
+async def set_skill_embedding(
+    session: AsyncSession, skill_id: int, *, embedding: Sequence[float]
+) -> None:
+    await session.exec(
+        Skill.__table__.update().where(Skill.id == skill_id).values(embedding=list(embedding))
+    )
+
+
 async def count_chunks_by_section(session: AsyncSession) -> list[tuple[str, int]]:
     rows = (
         await session.exec(
