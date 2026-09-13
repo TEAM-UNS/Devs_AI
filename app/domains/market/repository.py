@@ -627,6 +627,27 @@ async def set_posting_embed_hash(session: AsyncSession, posting_id: int, embed_h
     )
 
 
+async def clear_posting_embed_hash(session: AsyncSession, posting_ids: Sequence[int]) -> int:
+    """재임베딩 대상으로 되돌린다.
+
+    ★ 파서·청커를 고치면 content_hash 는 그대로인데 청크 내용만 달라진다.
+      embed_hash 를 비워 주지 않으면 _needs_embedding_clause 가 거짓이라
+      그 공고는 영영 옛 벡터를 들고 있는다. 코드는 고쳐졌는데 데이터는
+      안 고쳐진 상태가 조용히 유지된다.
+    """
+    if not posting_ids:
+        return 0
+    result = await session.exec(
+        JobPosting.__table__.update()
+        # ★ 임베딩 대상이 아닌 공고(이미지 본문 · 추출 실패)는 애초에 청크가
+        #   없어 "달라졌다" 로 잡힌다. 걸러내지 않으면 할 일이 없는데도
+        #   "91건 되돌렸다" 는 거짓 보고가 나간다.
+        .where(JobPosting.id.in_(list(posting_ids)), _embeddable_posting_clause())
+        .values(embed_hash=None)
+    )
+    return int(result.rowcount or 0)
+
+
 async def iter_companies_to_embed(
     session: AsyncSession,
     *,

@@ -237,6 +237,11 @@ async def cmd_reparse(args: argparse.Namespace) -> int:
         print(f"  공고당 평균 스킬 {stats.skills_linked / stats.postings:.1f}개")
     if stats.without_skills:
         print(f"  !! 스킬이 하나도 안 잡힌 공고 {stats.without_skills}건 — 사전 보강 후보")
+    if stats.reembed_queued:
+        print(
+            f"\n  청크가 달라진 {stats.reembed_queued}건을 재임베딩 대상으로 되돌렸습니다.\n"
+            f"  다음: uv run python -m scripts.embed_local.run"
+        )
 
     await close_engine()
     return 0 if stats.errors == 0 else 1

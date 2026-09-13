@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 
 from app.core.database import get_worker_session
 from app.domains.crawler import extractor
+from app.domains.crawler.chunker import build_chunks
 from app.domains.crawler.extractor import SkillMatcher
 from app.domains.crawler.schemas import RawJob
 from app.domains.crawler.sites.base import (
@@ -64,18 +65,32 @@ class ReparseStats:
     without_skills: int = 0
     field_updated: int = 0
     body_failed: int = 0
+    reembed_queued: int = 0
     errors: int = 0
 
     def as_line(self) -> str:
         return (
             f"postings={self.postings} skills_linked={self.skills_linked} "
             f"without_skills={self.without_skills} field_updated={self.field_updated} "
-            f"body_failed={self.body_failed} errors={self.errors}"
+            f"body_failed={self.body_failed} reembed_queued={self.reembed_queued} "
+            f"errors={self.errors}"
         )
+
+
+async def _chunks_changed(session, posting_id: int, description: str | None) -> bool:
+    """저장된 청크와 지금 코드가 만드는 청크가 다른가.
+
+    ★ content_hash 는 사이트가 준 원문에서 나오므로 파서를 고쳐도 그대로다.
+      달라지는 건 청크다. 그래서 여기서는 청크로 비교한다.
+    """
+    stored = await repository.get_chunk_state(session, posting_id)
+    current = {(c.section.value, c.seq): c.chunk_hash for c in build_chunks(description)}
+    return stored != current
 
 
 async def reparse_skills(*, source: str | None = None, limit: int | None = None) -> ReparseStats:
     stats = ReparseStats()
+    stale: list[int] = []
 
     async with get_worker_session() as session:
         matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
@@ -106,6 +121,9 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
                     if not extractor.is_valid_body(description, matcher):
                         if await repository.mark_body_extract_failed(session, posting_id):
                             stats.body_failed += 1
+
+                    if await _chunks_changed(session, posting_id, description):
+                        stale.append(posting_id)
             except Exception:
                 log.exception("재추출 실패 posting_id=%s", posting_id)
                 stats.errors += 1
@@ -115,6 +133,10 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
             stats.skills_linked += len(hits)
             if not hits:
                 stats.without_skills += 1
+
+        # ★ 청크가 달라진 공고는 재임베딩 대상으로 되돌린다. 이걸 빼면 코드만
+        #   고쳐지고 벡터는 옛것이 남는다 — 에러가 없어 알아채지도 못한다.
+        stats.reembed_queued = await repository.clear_posting_embed_hash(session, stale)
 
     return stats
 
