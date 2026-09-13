@@ -25,7 +25,7 @@ down_revision: str | None = "6e3c0e6b14ca"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# (code, name, sort_order) — app/domains/market/seed_data.FIELD_CATALOG 와 일치해야 한다.
+# (code, name, sort_order) — app/domains/crawler/seed_data.FIELD_CATALOG 와 일치해야 한다.
 NEW_FIELDS = [
     ("backend", "백엔드", 10),
     ("frontend", "프론트엔드", 20),

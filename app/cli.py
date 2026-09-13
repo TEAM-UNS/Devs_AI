@@ -285,7 +285,7 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
             print(f"  {item.tag:<{width}}  {item.count}")
 
     if unmatched or body_terms:
-        print("\n검토 후 app/domains/market/seed_data.py 에 추가하고 아래를 실행하세요:")
+        print("\n검토 후 app/domains/crawler/seed_data.py 에 추가하고 아래를 실행하세요:")
         print("  uv run python -m scripts.seed_skills && uv run python -m app.cli reparse")
 
     await close_engine()

@@ -1,7 +1,14 @@
-"""market 의존성 — 세션이 주입된 queries / repository 핸들.
+from typing import Annotated
 
-    QueriesDep      챗봇 툴이 받는 읽기 핸들
-    RepositoryDep   크롤러 태스크가 받는 쓰기 핸들 (워커 세션)
+from fastapi import Depends
 
-운영에서는 두 핸들이 서로 다른 DB 롤(ai_chat / ai_crawler)로 접속한다.
-"""
+from app.core.deps import SessionDep
+
+from app.domains.market.queries import ChatQueries
+
+
+def get_market_queries(session: SessionDep) -> ChatQueries:
+    return ChatQueries(session)
+
+
+MarketQueriesDep = Annotated[ChatQueries, Depends(get_market_queries)]

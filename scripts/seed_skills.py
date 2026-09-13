@@ -4,7 +4,7 @@
     python -m scripts.seed_skills --check  중복 검사만 (DB 접속 없음)
 
 멱등하다. 여러 번 돌려도 결과가 같다.
-카탈로그 원본은 app/domains/market/seed_data.py 다.
+카탈로그 원본은 app/domains/crawler/seed_data.py 다.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import sys
 from collections import defaultdict
 
 from app.core.database import close_engine, get_worker_session
+from app.domains.crawler.seed_data import FIELD_CATALOG, SKILL_CATALOG, catalog_stats
 from app.domains.market import repository
-from app.domains.market.seed_data import FIELD_CATALOG, SKILL_CATALOG, catalog_stats
 
 
 def find_alias_collisions() -> dict[str, list[str]]:

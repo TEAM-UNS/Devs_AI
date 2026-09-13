@@ -23,9 +23,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
+from app.domains.crawler.seed_data import SKILL_CATALOG, SkillSeed
 from app.domains.market import enums
 from app.domains.market.schemas import SkillDictionaryRow
-from app.domains.market.seed_data import SKILL_CATALOG, SkillSeed
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
