@@ -11,6 +11,7 @@ import pytest
 from app.domains.crawler.extractor import (
     Grade,
     Section,
+    detect_section,
     SkillMatcher,
     map_tech_field,
     normalize_company_name,
@@ -358,3 +359,40 @@ def test_figma_and_linux_are_not_common():
 def test_common_tools_are_still_extracted():
     """추출은 한다. 제외는 집계 쿼리(get_popular_skills)의 몫이다."""
     assert "Slack" in names("[자격요건]\nSlack 으로 협업한 경험")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  IGNORE 헤더 오탐 (process 부분일치)
+# ═══════════════════════════════════════════════════════════════════════════
+def test_body_line_containing_processing_is_not_a_welfare_header():
+    """★ 실측 버그. process 가 Processing·Processor 안에 걸려 업무 줄이 복지
+    헤더로 오인되고, 그 줄부터 다음 헤더까지 통째로 버려졌다 (115건 · 3.3만자)."""
+    for line in (
+        "• 가상머신 Processor, Peripheral 개발",
+        "- Capability of sensor-based signal processing and analysis.",
+        "• Embedded System 기반 ISP(Image Signal Processor) 개발",
+        "- CUDA를 활용한 Multi-processing 및 이미지 프로세싱 최적화",
+        "• RPA(Robotic Process Automation) 솔루션 아키텍처 설계 및 구축",
+        "Process Improvement",
+    ):
+        assert detect_section(line) is None, line
+
+
+def test_bare_english_welfare_headers_are_still_ignored():
+    for line in ("Benefits", "BENEFITS", "PROCESS", "Hiring Process",
+                 "[Perks & Benefits]", "05 / BENEFITS", "Welfare"):
+        assert detect_section(line) is Section.IGNORE, line
+
+
+def test_processing_line_keeps_the_rest_of_the_section():
+    body = "\n".join([
+        "[자격요건]",
+        "• 대규모 사용자 로그 처리 경험 (high-volume event processing)",
+        "• Spark, Flink 등 분산 처리 프레임워크 실무 경험",
+        "[복리후생]",
+        "• 식대 지원",
+    ])
+    sections = dict(split_sections(body))
+    assert "Spark" in sections[Section.REQUIRED]
+    assert "식대" in sections[Section.IGNORE]
+    assert "Spark" not in sections[Section.IGNORE]

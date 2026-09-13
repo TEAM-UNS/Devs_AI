@@ -47,7 +47,15 @@ _SECTION_HEADERS: tuple[tuple[Section, re.Pattern[str]], ...] = (
         re.compile(
             r"복리\s*후생|복지|근무\s*조건|근무\s*환경|근무\s*시간|채용\s*절차|전형\s*절차"
             r"|지원\s*방법|제출\s*서류|기타\s*사항|유의\s*사항|회사\s*소개|서비스\s*소개"
-            r"|benefits?|welfare|perks|process",
+            # ★ 영문 키워드는 "그 줄에 그것만 있을 때" 만 헤더로 친다.
+            #   부분일치를 허용하면 process 가 Processing · Processor ·
+            #   Multi-processing 안에 걸린다. 그러면 "• 가상머신 Processor,
+            #   Peripheral 개발" 같은 업무 줄이 복지 헤더가 되어 그 줄부터
+            #   다음 헤더까지 통째로 버려진다 (실측 125건 · 4만자 · 임베디드·
+            #   영상처리·데이터 직군에 집중). _WORD_BOUNDED 와 같은 부류의 버그다.
+            r"|^[\W\d_]*(?:hiring|recruit(?:ment)?|selection)?\s*"
+            r"(?:process(?:es)?|benefits?|welfare|perks)"
+            r"(?:\s*[&/]\s*(?:benefits?|perks))?[\W\d_]*$",
             re.IGNORECASE,
         ),
     ),
