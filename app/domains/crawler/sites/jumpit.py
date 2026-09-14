@@ -1,27 +1,4 @@
-"""점핏 — 공개 XHR(JSON) 호출.
-
-실제 응답을 확인하고 필드명을 고정했다 (2026-07-30 기준).
-
-    목록  GET https://jumpit-api.saramin.co.kr/api/positions
-              ?sort=popular&highlight=false&page=N
-          → result.{totalCount, page, positions[]}
-          positions[]: id · title · companyName · techStacks(문자열 배열)
-                       jobCategory(콤마 문자열) · locations[] · minCareer · maxCareer
-                       newcomer · closedAt · serialNumber
-
-    상세  GET https://jumpit-api.saramin.co.kr/api/position/{id}
-          → result.{responsibility, qualifications, preferredRequirements,
-                    welfares, recruitProcess, serviceInfo, location, tags[],
-                    jobCategories[{id,name}], companyUrl, establishDate,
-                    educationName, publishedAt, manDbMcomIdx}
-
-주의
-    - techStacks 의 형태가 목록(문자열 배열)과 상세(`{stack, imagePath}` 객체 배열)로
-      다르다. 상세로 덮어쓸 때 반드시 변환해야 한다.
-    - 연봉 필드가 아예 없다. 점핏은 급여를 공개하지 않으므로
-      salary_type 은 항상 unknown 이 된다.
-    - 날짜 표기도 목록("...T23:59:59")과 상세("... 23:59:59")가 다르다.
-"""
+# 점핏 목록과 상세 수집 (JSON API)
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -63,7 +40,6 @@ class JumpitCrawler(BaseSiteCrawler):
     source = "jumpit"
     referer = f"{WEB_BASE}/positions"
 
-    # ── 목록 ──────────────────────────────────────────────────────────────
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         payload = await self.get_json(
             LIST_URL,
@@ -110,7 +86,6 @@ class JumpitCrawler(BaseSiteCrawler):
             raw={"list": item},
         )
 
-    # ── 상세 ──────────────────────────────────────────────────────────────
     async def fetch_detail(self, job: RawJob) -> RawJob:
         try:
             payload = await self.get_json(
@@ -128,6 +103,7 @@ class JumpitCrawler(BaseSiteCrawler):
             log.warning("jumpit 상세 응답에 result 없음 id=%s", job.source_job_id)
             return job
 
+        # 상세의 techStacks 는 목록과 달리 {stack, imagePath} 객체 배열이다
         stacks = [
             s.get("stack")
             for s in (result.get("techStacks") or [])

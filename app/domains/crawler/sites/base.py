@@ -1,17 +1,4 @@
-"""사이트 어댑터 공통 골격 — 딜레이 · 재시도 · 감속 · 스냅샷.
-
-정책
-    딜레이   요청 간 base_delay × uniform(1.0, 1.6) 지터
-    동시성   세마포어 2
-    재시도   429 · 403 · 5xx · 타임아웃 → 지수 백오프 3회
-    감속     403/429 를 만나면 base_delay 를 1.6배로 올린다 (최대 20초).
-             한 번 올라간 딜레이는 이 실행 동안 내려가지 않는다.
-    스냅샷   모든 응답 원본을 data/raw/{source}/ 에 저장한다.
-             파서가 깨졌을 때 재수집 없이 재파싱할 수 있어야 한다.
-
-셀렉터/스키마 미스는 ParseError 로 올린다. 호출부(service)가 해당 사이트만
-중단하고 나머지는 계속 진행한다.
-"""
+# 사이트 크롤러 공통 베이스 (딜레이, 재시도, 감속, 스냅샷)
 
 import abc
 import asyncio
@@ -89,7 +76,6 @@ class BaseSiteCrawler(abc.ABC):
 
         self.request_count = 0
 
-    # ── lifecycle ─────────────────────────────────────────────────────────
     async def __aenter__(self) -> Self:
         if self._client is None:
             self._client = httpx.AsyncClient(
@@ -113,7 +99,6 @@ class BaseSiteCrawler(abc.ABC):
             "Origin": self.referer.rstrip("/").rsplit("/", 1)[0] if self.referer else "",
         }
 
-    # ── 요청 ──────────────────────────────────────────────────────────────
     async def _sleep_with_jitter(self) -> None:
         await asyncio.sleep(self._delay * random.uniform(1.0, 1.6))
 
@@ -215,7 +200,6 @@ class BaseSiteCrawler(abc.ABC):
 
         raise FetchError(f"{url} 재시도 {self._max_retry}회 소진") from last_error
 
-    # ── 어댑터가 구현할 것 ────────────────────────────────────────────────
     @abc.abstractmethod
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         pass

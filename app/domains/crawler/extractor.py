@@ -1,21 +1,4 @@
-"""정규화 · 기술스택 추출.
-
-추출 파이프라인
-    1. 본문을 섹션으로 분할 (자격요건 · 우대사항 · 주요업무 · 무시)
-    2. 무시 섹션을 버린다.  ★ 이게 핵심이다.
-       복지 섹션의 "Slack 으로 소통해요", "자바 개발서적 지원" 이 스택으로
-       잡히면 집계가 통째로 오염된다.
-    3. skill_alias 전체를 하나의 정규식으로 합쳐 매칭
-       - 긴 별칭 우선 (JavaScript 가 Java 로 잡히면 안 된다)
-       - 좌우 경계 검사 (ABC 안의 C 가 잡히면 안 된다)
-       - C++ · C# · .NET · Node.js 처럼 특수문자가 든 별칭도 동작해야 한다
-    4. 모호 스킬(Go · C · R)은 ±40자 안에 문맥 단서가 있을 때만 채택
-    5. 등급 결정: tag > required > preferred > body
-
-등급과 DB 값
-    DB(posting_skill.requirement)는 required · preferred · tag 세 값만 갖는다.
-    본문 등급(BODY)은 우선순위 계산에만 쓰고 저장할 때 preferred 로 내린다.
-"""
+# 본문 섹션 분할, 스킬 추출, 분야와 연봉 정규화
 
 import re
 from collections import Counter, defaultdict
@@ -26,9 +9,6 @@ from enum import IntEnum, StrEnum
 from app.domains.crawler.seed_data import SKILL_CATALOG, SkillSeed
 from app.domains.market import enums
 from app.domains.market.schemas import SkillDictionaryRow
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 class Section(StrEnum):
@@ -47,12 +27,7 @@ _SECTION_HEADERS: tuple[tuple[Section, re.Pattern[str]], ...] = (
         re.compile(
             r"복리\s*후생|복지|근무\s*조건|근무\s*환경|근무\s*시간|채용\s*절차|전형\s*절차"
             r"|지원\s*방법|제출\s*서류|기타\s*사항|유의\s*사항|회사\s*소개|서비스\s*소개"
-            # ★ 영문 키워드는 "그 줄에 그것만 있을 때" 만 헤더로 친다.
-            #   부분일치를 허용하면 process 가 Processing · Processor ·
-            #   Multi-processing 안에 걸린다. 그러면 "• 가상머신 Processor,
-            #   Peripheral 개발" 같은 업무 줄이 복지 헤더가 되어 그 줄부터
-            #   다음 헤더까지 통째로 버려진다 (실측 125건 · 4만자 · 임베디드·
-            #   영상처리·데이터 직군에 집중). _WORD_BOUNDED 와 같은 부류의 버그다.
+            # 영문 키워드는 줄 전체가 그것일 때만 헤더로 본다 (process 가 Processor 에 걸리지 않게)
             r"|^[\W\d_]*(?:hiring|recruit(?:ment)?|selection)?\s*"
             r"(?:process(?:es)?|benefits?|welfare|perks)"
             r"(?:\s*[&/]\s*(?:benefits?|perks))?[\W\d_]*$",
@@ -94,8 +69,6 @@ SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ★ 클래스가 아래에 정의돼 있어 문자열로 쓴다. from __future__ import annotations
-#   를 쓰지 않기 때문이다(SQLModel 모델과 기준을 맞춘다).
 _DEFAULT_MATCHER: "SkillMatcher | None" = None
 
 
@@ -141,10 +114,6 @@ def split_sections(text: str | None) -> list[tuple[Section, str]]:
     ]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 class Grade(IntEnum):
     BODY = 0
     PREFERRED = 1
@@ -170,9 +139,6 @@ _SECTION_GRADE: dict[Section, Grade] = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
-
 AMBIGUOUS_WINDOW = 40
 
 _CONTEXT_CLUES = re.compile(
@@ -187,9 +153,6 @@ def has_context_clue(text: str, start: int, end: int) -> bool:
     window = text[max(0, start - AMBIGUOUS_WINDOW) : end + AMBIGUOUS_WINDOW]
     return bool(_CONTEXT_CLUES.search(window))
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 
 _KOREAN = re.compile(r"[가-힣]")
 
@@ -236,7 +199,6 @@ class SkillMatcher:
         self._alias_to_id = alias_to_id
         self._cs_alias_to_id = cs_alias_to_id
 
-        # ★ 길이 내림차순. 같은 위치에서는 긴 별칭이 먼저 시도된다.
         self._pattern = self._compile(alias_to_id, re.IGNORECASE)
         self._cs_pattern = self._compile(cs_alias_to_id, 0)
 
@@ -247,7 +209,6 @@ class SkillMatcher:
         ordered = sorted(aliases, key=len, reverse=True)
         return re.compile("|".join(_alias_pattern(a) for a in ordered), flags)
 
-    # ── 생성자 ────────────────────────────────────────────────────────────
     @classmethod
     def from_catalog(cls, catalog: Sequence[SkillSeed] = SKILL_CATALOG) -> "SkillMatcher":
         return cls(
@@ -280,7 +241,6 @@ class SkillMatcher:
             ]
         )
 
-    # ── 매칭 ──────────────────────────────────────────────────────────────
     def find(self, text: str) -> list[tuple[SkillEntry, int, int]]:
         if not text:
             return []
@@ -352,8 +312,6 @@ class SkillMatcher:
         )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 _CORP_TOKENS = re.compile(r"\(주\)|\(株\)|㈜|주식회사|유한회사|\(유\)", re.IGNORECASE)
 _PARENS = re.compile(r"[\(\[（【][^\)\]）】]*[\)\]）】]")
 _NON_WORD = re.compile(r"[\s\-_.,'\"·•]+")
@@ -366,12 +324,7 @@ def normalize_company_name(name: str) -> str:
     return text.strip().lower()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
-# ★ "웹개발" · "SW/솔루션" · "소프트웨어개발" 같은 포괄 카테고리는 넣지 않는다.
-#   특정 분야로 매핑하면 "백엔드/서버개발 + 웹개발" 이 1:1 동점이 되어 오히려
-#   미분류가 는다 (실측: 넣었을 때 분류돼 있던 75건이 미분류로 후퇴).
-#   이런 카테고리는 "개발 직군이다" 정도의 정보만 갖는다.
+# 웹개발, SW/솔루션 같은 포괄 카테고리는 넣지 않는다 (동점이 늘어 미분류가 는다)
 _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
     (enums.TechField.SECURITY, ("보안", "security", "해킹", "침해")),
     (
@@ -383,7 +336,6 @@ _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
             "firmware",
             "hw",
             "제어",
-            # 사람인 카테고리. "hw" 는 단어 경계를 요구해 "H/W" 를 못 잡는다.
             "h/w",
             "hw/",
             "하드웨어",
@@ -421,7 +373,6 @@ _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
             "클라우드",
             "sre",
             "네트워크",
-            # 사람인은 공백 없이 준다: "SE(시스템엔지니어)"
             "시스템엔지니어",
             "system engineer",
             "시스템관리",
@@ -432,9 +383,6 @@ _FIELD_RULES: tuple[tuple[enums.TechField, tuple[str, ...]], ...] = (
 )
 
 
-# ★ 부분문자열로 매칭하면 엉뚱한 단어에 걸리는 키워드. 단어 경계를 요구한다.
-#   "ai" 는 Sustainable · Maintainer 에 걸리고, "hw"·"sre"·"c" 도 마찬가지다.
-#   실측: "지속가능(Sustainable) 플랫폼 서버 개발" 이 data_ai 로 분류됐다.
 _WORD_BOUNDED = frozenset({"ai", "hw", "sre", "c", "ml 엔지니어"})
 
 
@@ -445,7 +393,6 @@ def _keyword_hits(keyword: str, text: str) -> bool:
 
 
 def _vote(text_value: str) -> enums.TechField | None:
-    """문자열 하나가 가리키는 분야. _FIELD_RULES 순서로 첫 매칭."""
     lowered = (text_value or "").lower()
     for tech_field, keywords in _FIELD_RULES:
         if any(_keyword_hits(kw, lowered) for kw in keywords):
@@ -454,16 +401,7 @@ def _vote(text_value: str) -> enums.TechField | None:
 
 
 def map_tech_field(categories: list[str], title: str = "") -> enums.TechField | None:
-    """카테고리마다 한 표씩 매겨 최다 득표 분야를 고른다.
-
-    ★ 카테고리를 이어붙여 첫 매칭을 쓰면 안 된다. 사이트가 한 공고에 카테고리를
-      여러 개 주는데(2개 이상이 40%), _FIELD_RULES 배열에서 위에 있다는 이유만으로
-      분야가 정해진다. 실제로 ['서버/백엔드 개발자', '프론트엔드 개발자'] 공고가
-      전부 frontend 로 갔다 — FRONTEND 규칙이 BACKEND 보다 위에 있어서다.
-
-    카테고리가 비었으면(원티드는 전량 빈 배열) 제목으로 판단하고,
-    동점이면 제목이 가리키는 쪽을 고른다. 제목도 못 정하면 미분류로 둔다.
-    """
+    # 카테고리를 이어붙이지 말고 하나씩 투표한다 (이어붙이면 규칙 순서가 분야를 정해 버린다)
     votes: Counter[enums.TechField] = Counter()
     for category in categories:
         if (hit := _vote(category)) is not None:
@@ -481,8 +419,6 @@ def map_tech_field(categories: list[str], title: str = "") -> enums.TechField | 
     return from_title if from_title in tied else None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 _SIZE_BY_TAG = {
     "대기업": enums.CompanySize.ENTERPRISE,
     "중견기업": enums.CompanySize.LARGE,
@@ -519,8 +455,6 @@ def normalize_skill_name(name: str) -> str:
     return " ".join((name or "").split()).strip()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 _NEGOTIABLE = ("회사내규", "사내규정", "면접 후", "면접후", "협의", "추후 결정", "미정")
 _FOREIGN = re.compile(r"[$€£¥₹]|\b(usd|eur|jpy|gbp|krw\s*equivalent)\b", re.IGNORECASE)
 _HOURLY = re.compile(r"시급|시간\s*당|hourly|per\s*hour", re.IGNORECASE)

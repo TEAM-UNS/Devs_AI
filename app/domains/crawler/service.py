@@ -1,16 +1,4 @@
-"""수집 오케스트레이션: sites → extractor → market.repository.
-
-한 페이지 처리 흐름
-    1. 목록 수집
-    2. (옵션) 상세를 동시성 제한 하에 병렬 수집
-    3. content_hash 비교
-         같으면 → collected_at 만 갱신 (skipped)
-         다르면 → company · company_source · job_posting · posting_skill upsert
-    4. crawl_run 에 집계 기록
-
-네트워크 I/O 를 먼저 끝내고 그다음에 DB 세션을 연다.
-세션을 열어둔 채 HTTP 를 기다리면 커넥션을 오래 붙잡게 된다.
-"""
+# 사이트 수집 결과를 DB 에 적재하는 수집 서비스
 
 import asyncio
 import logging
@@ -41,7 +29,6 @@ class CrawlStats:
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
-    # ★ 목록 단계에서 걸러 상세 요청 자체를 하지 않은 건수 (증분 수집).
     skipped_known: int = 0
     reextracted: int = 0
     errors: int = 0
@@ -78,11 +65,7 @@ class ReparseStats:
 
 
 async def _chunks_changed(session, posting_id: int, description: str | None) -> bool:
-    """저장된 청크와 지금 코드가 만드는 청크가 다른가.
-
-    ★ content_hash 는 사이트가 준 원문에서 나오므로 파서를 고쳐도 그대로다.
-      달라지는 건 청크다. 그래서 여기서는 청크로 비교한다.
-    """
+    # content_hash 는 원문 기준이라 파서를 고쳐도 안 바뀐다. 그래서 청크로 비교한다
     stored = await repository.get_chunk_state(session, posting_id)
     current = {(c.section.value, c.seq): c.chunk_hash for c in build_chunks(description)}
     return stored != current
@@ -134,8 +117,7 @@ async def reparse_skills(*, source: str | None = None, limit: int | None = None)
             if not hits:
                 stats.without_skills += 1
 
-        # ★ 청크가 달라진 공고는 재임베딩 대상으로 되돌린다. 이걸 빼면 코드만
-        #   고쳐지고 벡터는 옛것이 남는다 — 에러가 없어 알아채지도 못한다.
+        # 청크가 바뀐 공고는 embed_hash 를 비워 재임베딩 대상으로 돌린다
         stats.reembed_queued = await repository.clear_posting_embed_hash(session, stale)
 
     return stats
@@ -183,7 +165,6 @@ async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStat
 class CrawlService:
     def __init__(self, crawler: BaseSiteCrawler, *, force_reextract: bool = False) -> None:
         self.crawler = crawler
-        # ★ 파서를 고친 뒤 백필용. content_hash 가 같아도 다시 적재한다.
         self.force_reextract = force_reextract
 
     async def crawl(
@@ -238,14 +219,12 @@ class CrawlService:
                 stats.total_available = total or stats.total_available
                 log.info("%s %d페이지: %d건", self.crawler.source, page, len(jobs))
 
-                # ── 종료 조건 (명세 3-3) ──────────────────────────────────
                 if not jobs:
                     if page == start_page:
                         raise SelectorBrokenError(self.crawler.source, keyword)
                     log.info("%s: page %d 가 비어 있어 종료합니다.", self.crawler.source, page)
                     break
 
-                # ── 증분 필터 (명세 3-2) ─────────────────────────────────
                 fresh = [job for job in jobs if job.source_job_id not in seen]
                 known = len(jobs) - len(fresh)
                 if known:
@@ -281,7 +260,6 @@ class CrawlService:
         await self._close_run(run_id, stats, status)
         return stats
 
-    # ── 상세 ──────────────────────────────────────────────────────────────
     async def _fetch_details(self, jobs: list[RawJob], stats: CrawlStats) -> list[RawJob]:
         results = await asyncio.gather(
             *(self.crawler.fetch_detail(job) for job in jobs), return_exceptions=True
@@ -296,7 +274,6 @@ class CrawlService:
                 merged.append(result)
         return merged
 
-    # ── 적재 ──────────────────────────────────────────────────────────────
     async def _persist(
         self,
         jobs: list[RawJob],
@@ -436,7 +413,6 @@ class CrawlService:
             )
         return company_id
 
-    # ── 이력 ──────────────────────────────────────────────────────────────
     async def _close_run(self, run_id: int, stats: CrawlStats, status: enums.RunStatus) -> None:
         notes = [f"skipped_known={stats.skipped_known}"] if stats.skipped_known else []
         notes += stats.error_messages[:5]

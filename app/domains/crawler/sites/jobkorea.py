@@ -1,27 +1,4 @@
-"""잡코리아 — 서버 렌더 HTML 파싱.
-
-실제 응답을 확인하고 구조를 고정했다 (2026-07-30 기준).
-
-    목록  GET /Search/?stext=..&tabType=recruit&Page_No=N
-          공고 링크는 /Recruit/GI_Read/{id}. 프론트가 tailwind 로 재작성돼서
-          클래스명이 전부 유틸리티 클래스(w-full, flex ...)다. 의미가 없으므로
-          링크를 기준으로 블록을 거슬러 올라가 회사명을 찾는다.
-
-    상세  GET /Recruit/GI_Read/{id}
-          ★ JobPosting JSON-LD 가 있다. 1순위 폴백이 그대로 먹힌다.
-          title · datePosted · validThrough · employmentType
-          · experienceRequirements · educationRequirements
-          · hiringOrganization.name · jobLocation.address.streetAddress
-          · baseSalary{value, unitText} ← 급여가 숫자로 구조화되어 있다
-
-주의
-    - JSON-LD 의 description 은 SEO 용 자동 생성 문장이다
-      ("○○에서 정규직 경력 채용을 진행합니다"). 실제 요강이 아니므로
-      본문은 HTML 에서 따로 뽑는다. 클래스명을 못 믿으니
-      htmlutil.largest_text_block() 으로 가장 큰 텍스트 덩어리를 고른다.
-    - 라벨-값(dt/dd)은 0개다. 2순위 폴백은 이 사이트에서 동작하지 않는다.
-    - 봇 탐지가 있다. delay 2.5초 · 동시성 1 을 반드시 유지한다.
-"""
+# 잡코리아 목록과 상세 수집 (HTML)
 
 import copy
 import logging
@@ -44,6 +21,7 @@ DETAIL_URL = f"{BASE}/Recruit/GI_Read/{{job_id}}"
 
 KST = timezone(timedelta(hours=9))
 
+# 봇 탐지가 있어 딜레이 2.5초, 동시성 1 을 유지한다
 DELAY_SECONDS = 2.5
 CONCURRENCY = 1
 
@@ -114,7 +92,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
         headers["Upgrade-Insecure-Requests"] = "1"
         return headers
 
-    # ── 목록 ──────────────────────────────────────────────────────────────
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         soup = await self.get_soup(
             LIST_URL,
@@ -164,7 +141,6 @@ class JobkoreaCrawler(BaseSiteCrawler):
                 return name[:200]
         return ""
 
-    # ── 상세 ──────────────────────────────────────────────────────────────
     async def fetch_detail(self, job: RawJob) -> RawJob:
         try:
             soup = await self.get_soup(
@@ -207,6 +183,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
                 ],
             }
 
+        # JSON-LD description 은 SEO 용 자동 문장이라 본문은 HTML 에서 따로 뽑는다
         update |= self.extract_body(soup)
 
         clean = {k: v for k, v in update.items() if v not in (None, "", [])}

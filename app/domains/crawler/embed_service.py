@@ -1,29 +1,4 @@
-"""임베딩 오케스트레이션 — 청크 · 기업 프로필 · 스킬.
-
-공고 임베딩
-    대상: embed_hash IS DISTINCT FROM content_hash
-    chunker 로 청크 생성 → chunk_hash 가 바뀐 청크만 EmbedderPort 호출
-    배치: EMBED_BATCH_SIZE(96) 개 단위로 API 1회 (태스크당 1~2회)
-    성공 시에만 embed_hash = content_hash 로 갱신
-    실패: 3회 재시도 후에도 실패하면 embed_hash 를 갱신하지 않는다
-          → 다음 백필에서 자연히 재처리된다
-
-기업 프로필 임베딩
-    description + business_content + industry 를 합쳐 임베딩
-    셋 다 비어 있으면 스킵
-
-스킬 임베딩
-    skill.name + aliases. embed_hash 컬럼이 없어 매번 전량 다시 만든다 (200행 규모)
-
-백필
-    누락·실패분 최대 EMBED_BACKFILL_LIMIT(500)건/회
-    body_is_image=true · description IS NULL 제외
-
-★ 배치 경계가 이 모듈의 존재 이유다.
-  공고 1건당 API 1회를 부르면 660건에 660번 호출한다. 여러 공고의 청크를
-  하나의 배치(96개)로 모아서 부르고, 배치가 성공한 뒤에 그 배치에 속한
-  공고들의 embed_hash 를 닫는다.
-"""
+# 공고 청크, 기업, 스킬 임베딩 실행
 
 import hashlib
 import logging
@@ -85,8 +60,6 @@ class _Work:
     reused: int
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 async def embed_postings(
     session_factory: SessionFactory,
     embedder: EmbedderPort,
@@ -196,7 +169,7 @@ async def _flush(
                     work.posting_id,
                     [(c.section.value, c.seq) for c in work.chunks],
                 )
-                # ★ 여기까지 왔을 때만 닫는다.
+                # 청크 저장이 끝난 공고만 embed_hash 를 닫는다 (실패분은 다음 백필이 다시 잡는다)
                 await repository.set_posting_embed_hash(session, work.posting_id, work.content_hash)
             await session.commit()
         except Exception as exc:
@@ -212,8 +185,6 @@ async def _flush(
     stats.chunks_reused += sum(w.reused for w in batch)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 def build_company_text(
     description: str | None, business_content: str | None, industry: str | None
 ) -> str:
@@ -286,8 +257,6 @@ async def embed_companies(
     return stats
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 def build_skill_text(name: str, aliases: Sequence[str]) -> str:
     return ", ".join([name, *aliases])
 

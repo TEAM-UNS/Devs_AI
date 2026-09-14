@@ -1,14 +1,4 @@
-"""수집 대상 설정 — crawl_dispatch 가 이 표를 그대로 팬아웃한다 (명세 3-1).
-
-    KEYWORDS       사람인·잡코리아처럼 전 직종이 섞인 사이트에서 쓸 검색어
-    CRAWL_CONFIG   사이트 → {pages, keywords}
-
-점핏·원티드는 개발 직군 전용이라 키워드 없이 전체를 순회한다.
-사람인·잡코리아는 전 직종이 섞여 있어 키워드로 걸러야 한다.
-
-**페이지당 건수는 사이트별로 다르다.** 첫 수집 로그(`{site} {page}페이지: N건`)
-로 확인해 pages 를 조정한다.
-"""
+# 사이트별 수집 대상과 크롤러 생성
 
 from dataclasses import dataclass
 
@@ -33,7 +23,7 @@ CRAWL_CONFIG: dict[str, dict[str, object]] = {
     "jumpit": {"pages": 40, "keywords": None},
     "wanted": {"pages": 30, "keywords": None},
     "saramin": {"pages": 8, "keywords": KEYWORDS},
-    # ★ 잡코리아는 제외한다 (DECISIONS.md "잡코리아 보류").
+    # 잡코리아는 보류라 제외 (DECISIONS.md 참고)
 }
 
 DEFAULT_SKIP_SEEN_DAYS = 7

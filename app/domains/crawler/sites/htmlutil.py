@@ -1,22 +1,4 @@
-"""HTML 파싱 공용 유틸 — 사람인 · 잡코리아가 공유한다.
-
-3중 폴백의 1·2순위를 여기서 구현한다.
-
-    1순위 jobposting_from_jsonld()
-        <script type="application/ld+json"> 의 schema.org JobPosting.
-        구글 구인구직 노출용이라 SEO 담당이 지키는 값이고, 개편에도 잘 살아남는다.
-        제목·회사·경력·학력·근무지·급여·게시일·마감일이 한 번에 나온다.
-
-    2순위 label_value_pairs() + pick()
-        페이지의 dt/dd · th/td · .tit/.desc 쌍을 전부 긁어 dict 로 만든 뒤
-        라벨 텍스트로 골라 쓴다.
-        클래스명은 개편 때마다 바뀌지만 "경력" "사원수" 같은 한글 라벨은
-        거의 안 바뀐다. 그래서 실무에서 가장 오래 버티는 방법이다.
-
-    3순위 CSS 셀렉터는 각 사이트 파일의 SELECTORS dict 에 몰아둔다.
-
-클래스명에 의존하는 코드를 이 파일에 추가하지 말 것.
-"""
+# 사람인과 잡코리아가 함께 쓰는 HTML 파싱 유틸
 
 import copy
 import json
@@ -34,8 +16,6 @@ _WS = re.compile("[ 	 \u200b]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 def block_text(node: Tag | None) -> str:
     if node is None:
         return ""
@@ -51,8 +31,6 @@ def block_text(node: Tag | None) -> str:
     return _BLANK_LINES.sub("\n\n", "\n".join(line for line in lines if line)).strip()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 def _iter_json_objects(payload: Any):
     if isinstance(payload, list):
         for item in payload:
@@ -108,8 +86,6 @@ def jsonld_text(value: Any) -> str | None:
     return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 _LABEL_NOISE = re.compile(r"[\s:：*]+")
 
 LABEL_ALIASES: dict[str, tuple[str, ...]] = {
@@ -137,7 +113,7 @@ def normalize_label(text: str) -> str:
     return _LABEL_NOISE.sub("", text or "").strip()
 
 
-# ★ <a> 는 지우지 않는다. 홈페이지 값은 스냅샷 228건 중 대부분이 <a> 안에만
+# a 태그는 지우지 않는다 (홈페이지 값이 대부분 a 안에만 있다)
 VALUE_CHROME = (
     "script, style, button, "
     "[class*='tooltip' i], [class*='tip_' i], [role='dialog'], [role='tooltip'], "
@@ -249,8 +225,6 @@ def pick(pairs: dict[str, str], key: str) -> str | None:
     return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 _INT = re.compile(r"[\d,]+")
 
 
@@ -309,8 +283,6 @@ def parse_career(text: str | None) -> tuple[int | None, int | None]:
     return None, None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 def looks_like_image_posting(node: Tag | None, text: str | None) -> bool:
     if node is None:
         return False

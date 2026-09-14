@@ -1,33 +1,4 @@
-"""분류 · 스킬 사전의 원본 데이터.
-
-DB(skill · skill_alias · skill_field · tech_field)의 시드이자,
-DB 없이 추출기를 테스트할 때 쓰는 픽스처다.
-적재는 scripts/seed_skills.py 가 한다.
-
-별칭 규칙
-    - 정규 표기(name)는 자동으로 별칭에 포함된다. 여기 또 쓰지 않는다.
-    - 전부 소문자로 비교한다. 대소문자 변형("MYSQL")은 넣을 필요 없다.
-    - 한글 표기를 반드시 하나 이상 넣는다. 국내 공고는 "스프링부트" 처럼 쓴다.
-    - 부분 문자열이 다른 스킬과 겹쳐도 된다. 매칭은 긴 별칭이 이긴다
-      ("자바스크립트" 가 "자바" 보다 먼저 매칭된다).
-
-is_ambiguous
-    한 글자거나 일반 단어와 겹치는 스킬(Go · C · R). 문맥 단서가 있을 때만
-    채택한다. 자세한 규칙은 extractor.AMBIGUOUS_WINDOW 참고.
-
-is_common
-    전 직군 공통 도구(Git · Jira · Slack · Notion · Confluence).
-    트렌드 집계에서 기본 제외한다. Figma · Linux 는 플래그하지 않는다 —
-    디자인 협업·인프라라는 직군 신호가 실제로 있기 때문이다.
-
-cs_aliases (case sensitive)
-    대소문자를 구분해 매칭할 별칭. 영어 문장에 흔한 짧은 토큰이 대상이다.
-        CAN  "you can use..." 의 can
-        ES   스페인어·복수형 접미사 등
-        R/C  문장 중간의 한 글자
-    문맥 게이트가 있긴 하지만, 영문 공고가 많은 사이트가 들어오면 게이트만으로는
-    뚫린다. 애초에 매칭이 안 되게 막는 쪽이 확실하다.
-"""
+# 분야와 스킬 사전 시드 데이터
 
 from dataclasses import dataclass, field
 
@@ -68,7 +39,6 @@ class SkillSeed:
         return list(seen)
 
 
-# ── 분야 ────────────────────────────────────────────────────────────────────
 FIELD_CATALOG: tuple[FieldSeed, ...] = (
     FieldSeed(TechField.BACKEND, "백엔드", 10),
     FieldSeed(TechField.FRONTEND, "프론트엔드", 20),
@@ -90,9 +60,10 @@ _G = TechField.GAME
 _E = TechField.EMBEDDED
 
 
-# ── 스킬 ────────────────────────────────────────────────────────────────────
+# 정규 표기(name)는 자동으로 별칭에 들어가니 aliases 에 다시 쓰지 않는다
+# 한글 표기를 하나 이상 넣는다. 별칭은 소문자로 비교한다
+# cs_aliases 는 대소문자를 구분해 매칭한다 (CAN, ES 처럼 영어 단어와 겹치는 짧은 토큰용)
 SKILL_CATALOG: tuple[SkillSeed, ...] = (
-    # ══ backend ══════════════════════════════════════════════════════════
     SkillSeed("Java", "language", (_B, _M), ("자바",)),
     SkillSeed("Kotlin", "language", (_B, _M), ("코틀린",)),
     SkillSeed("Spring Boot", "framework", (_B,), ("스프링부트", "스프링 부트", "springboot")),
@@ -131,7 +102,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("GraphQL", "protocol", (_B, _F), ("그래프ql",)),
     SkillSeed("gRPC", "protocol", (_B,), ("grpc",)),
     SkillSeed("REST API", "protocol", (_B, _F), ("restful", "restful api", "레스트api")),
-    # ══ frontend ═════════════════════════════════════════════════════════
     SkillSeed("JavaScript", "language", (_F, _B), ("자바스크립트", "js", "es6", "ecmascript")),
     SkillSeed("TypeScript", "language", (_F, _B), ("타입스크립트", "ts")),
     SkillSeed("React", "library", (_F,), ("리액트", "react.js", "reactjs")),
@@ -151,7 +121,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Vite", "tool", (_F,), ("비테",)),
     SkillSeed("jQuery", "library", (_F,), ("제이쿼리",)),
     SkillSeed("Storybook", "tool", (_F,), ("스토리북",)),
-    # ══ mobile ═══════════════════════════════════════════════════════════
     SkillSeed("Swift", "language", (_M,), ("스위프트",)),
     SkillSeed("SwiftUI", "framework", (_M,), ("스위프트ui",)),
     SkillSeed("Objective-C", "language", (_M,), ("objective c", "objc", "오브젝티브c")),
@@ -166,7 +135,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("RxSwift", "library", (_M,), ("rx swift",)),
     SkillSeed("Retrofit", "library", (_M,), ("레트로핏",)),
     SkillSeed("Xcode", "tool", (_M,), ("엑스코드",)),
-    # ══ data / AI ════════════════════════════════════════════════════════
     SkillSeed("Python", "language", (_D, _B), ("파이썬",)),
     SkillSeed("R", "language", (_D,), ("r언어", "알언어"), is_ambiguous=True, cs_aliases=("R",)),
     SkillSeed("SQL", "language", (_D, _B), ("에스큐엘",)),
@@ -182,16 +150,11 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Hugging Face", "platform", (_D,), ("허깅페이스", "huggingface", "transformers")),
     SkillSeed("OpenCV", "library", (_D, _E), ("오픈시브이", "open cv")),
     SkillSeed("MLflow", "tool", (_D,), ("ml flow", "엠엘플로우")),
-    # ── LLM · 벡터 검색 ────────────────────────────────────────────────
-    # ★ 사전을 크롤링 시작 2주 전에 만들어서 이 계열이 통째로 빠져 있었다.
-    #   본문 실측: RAG 611건 · LangChain 160건 · OpenAI 135건 · Vector DB 131건.
-    #   사이트 태그에는 거의 없고 본문에만 적혀 미매칭 리포트에도 안 잡혔다.
     SkillSeed(
         "RAG",
         "domain",
         (_D,),
         ("검색증강생성", "retrieval augmented generation", "retrieval-augmented generation"),
-        # 3글자라 "storage" 같은 단어에 걸릴 수 있다. 문맥 단서를 요구한다.
         is_ambiguous=True,
         cs_aliases=("RAG",),
     ),
@@ -224,7 +187,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     ),
     SkillSeed("Tableau", "tool", (_D,), ("태블로",)),
     SkillSeed("dbt", "tool", (_D,), ("data build tool",)),
-    # ══ devops ═══════════════════════════════════════════════════════════
     SkillSeed("Docker", "infra", (_O, _B), ("도커",)),
     SkillSeed("Kubernetes", "infra", (_O,), ("쿠버네티스", "k8s", "쿠버")),
     SkillSeed("AWS", "cloud", (_O, _B), ("아마존 웹서비스", "amazon web services")),
@@ -242,7 +204,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Prometheus", "tool", (_O,), ("프로메테우스",)),
     SkillSeed("Grafana", "tool", (_O,), ("그라파나",)),
     SkillSeed("Helm", "tool", (_O,), ("헬름",)),
-    # ══ security ═════════════════════════════════════════════════════════
     SkillSeed("모의해킹", "domain", (_S,), ("모의 해킹", "penetration test", "pentest")),
     SkillSeed("취약점 진단", "domain", (_S,), ("취약점진단", "vulnerability assessment")),
     SkillSeed("침해대응", "domain", (_S,), ("침해 대응", "incident response", "포렌식")),
@@ -259,7 +220,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("IDA Pro", "tool", (_S,), ("ida", "아이다 프로")),
     SkillSeed("Kali Linux", "os", (_S,), ("칼리리눅스", "칼리 리눅스")),
     SkillSeed("리버싱", "domain", (_S,), ("reverse engineering", "역공학")),
-    # ══ game ═════════════════════════════════════════════════════════════
     SkillSeed("Unity", "engine", (_G,), ("유니티", "unity3d")),
     SkillSeed("Unreal Engine", "engine", (_G,), ("언리얼", "unreal", "ue5", "ue4")),
     SkillSeed("C++", "language", (_G, _E), ("cpp", "씨쁠쁠", "시플플")),
@@ -274,7 +234,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Photon", "library", (_G,), ("포톤", "photon engine")),
     SkillSeed("Blender", "tool", (_G,), ("블렌더",)),
     SkillSeed("게임서버", "domain", (_G, _B), ("게임 서버", "game server")),
-    # ══ embedded ═════════════════════════════════════════════════════════
     SkillSeed("C", "language", (_E, _G), ("c언어", "씨언어"), is_ambiguous=True, cs_aliases=("C",)),
     SkillSeed("RTOS", "os", (_E,), ("실시간 운영체제",)),
     SkillSeed("FreeRTOS", "os", (_E,), ("free rtos", "프리rtos")),
@@ -299,7 +258,6 @@ SKILL_CATALOG: tuple[SkillSeed, ...] = (
     SkillSeed("Yocto", "tool", (_E,), ("욕토", "yocto project")),
     SkillSeed("펌웨어", "domain", (_E,), ("firmware", "펌웨어 개발")),
     SkillSeed("I2C", "protocol", (_E,), ("i2c 통신", "spi")),
-    # ══ 공통 도구 (is_common — 트렌드 집계에서 기본 제외) ═════════════════
     SkillSeed(
         "Git",
         "tool",

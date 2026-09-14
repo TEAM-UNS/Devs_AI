@@ -1,25 +1,4 @@
-"""사람인 — 서버 렌더 HTML 파싱.
-
-실제 응답을 확인하고 구조를 고정했다 (2026-07-30 기준).
-
-    목록  GET /zf_user/search?searchType=search&searchword=..&recruitPage=N
-          .item_recruit 블록. 여기서 rec_idx · 제목 · 회사명 · 직무키워드를 얻는다.
-
-    조건  GET /zf_user/jobs/relay/view-ajax?rec_idx=N
-          ★ 이게 핵심이다. 상세 페이지(/jobs/relay/view)의 조건 영역은
-          JS 로 렌더링돼서 httpx 로 받으면 비어 있다. 그 영역을 채우는
-          ajax 를 직접 부르면 경력·학력·급여·근무지·마감일과
-          기업정보(사원수·기업형태·업종·설립일·매출·홈페이지)가 전부 나온다.
-
-    본문  GET /zf_user/jobs/relay/view-detail?rec_idx=N&rec_seq=0
-          상세 요강은 iframe 안에 있다. iframe src 를 직접 부른다.
-
-3중 폴백
-    1순위 JSON-LD  — 사람인 상세에는 JobPosting 이 **없다**(BreadcrumbList 뿐).
-                     그래도 코드는 남겨둔다. 언제 생겨도 이득이고 비용이 0이다.
-    2순위 라벨-값  — 실질적인 주력. "경력" "사원수" 같은 한글 라벨로 꺼낸다.
-    3순위 셀렉터   — 목록 아이템처럼 라벨이 없는 곳에서만. SELECTORS 에 몰아둔다.
-"""
+# 사람인 목록과 상세 수집 (HTML)
 
 import copy
 import logging
@@ -38,6 +17,7 @@ log = logging.getLogger(__name__)
 
 BASE = "https://www.saramin.co.kr"
 LIST_URL = f"{BASE}/zf_user/search"
+# 상세 페이지 조건 영역은 JS 렌더링이라 그 영역을 채우는 ajax 를 직접 부른다
 AJAX_URL = f"{BASE}/zf_user/jobs/relay/view-ajax"
 BODY_URL = f"{BASE}/zf_user/jobs/relay/view-detail"
 VIEW_URL = f"{BASE}/zf_user/jobs/relay/view?rec_idx={{rec_idx}}"
@@ -45,7 +25,6 @@ VIEW_URL = f"{BASE}/zf_user/jobs/relay/view?rec_idx={{rec_idx}}"
 PAGE_SIZE = 40
 KST = timezone(timedelta(hours=9))
 
-# ── 3순위 폴백. 개편 시 여기만 고치면 된다. ────────────────────────────────
 SELECTORS = {
     "item": ".item_recruit",
     "title_link": ".job_tit a",
@@ -114,7 +93,6 @@ class SaraminCrawler(BaseSiteCrawler):
         headers["X-Requested-With"] = "XMLHttpRequest"
         return headers
 
-    # ── 목록 ──────────────────────────────────────────────────────────────
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         soup = await self.get_soup(
             LIST_URL,
@@ -194,7 +172,6 @@ class SaraminCrawler(BaseSiteCrawler):
             raw={"list_condition": hu.block_text(item.select_one(".job_condition"))},
         )
 
-    # ── 상세 ──────────────────────────────────────────────────────────────
     async def fetch_detail(self, job: RawJob) -> RawJob:
         rec_idx = job.source_job_id
         try:

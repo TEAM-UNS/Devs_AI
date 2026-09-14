@@ -1,20 +1,4 @@
-"""본문 → 섹션 청크 분할 (임베딩 단위).
-
-    responsibility   주요업무
-    required         자격요건
-    preferred        우대사항
-
-규칙
-    - 복지 · 전형절차 · 회사소개 상용구는 제외 (검색 노이즈)
-    - 섹션 헤더를 못 찾으면 전체를 responsibility 단일 청크로
-    - 섹션이 길면 seq 를 늘려 분할. 토큰 상한은 임베딩 모델 기준
-    - 각 청크마다 chunk_hash(정규화 텍스트 sha256) 계산 → 변경분만 재임베딩
-    - body_is_image=true 또는 description IS NULL 인 공고는 대상 아님
-
-섹션 판정은 extractor.split_sections 를 그대로 쓴다. 스킬 추출과 임베딩이
-서로 다른 기준으로 본문을 자르면 "자격요건에 있다" 는 근거가 두 곳에서
-달라진다.
-"""
+# 공고 본문을 임베딩용 섹션 청크로 분할
 
 import hashlib
 import re
@@ -92,7 +76,6 @@ def build_chunks(description: str | None) -> list[Chunk]:
     return chunks
 
 
-# ── 내부 ────────────────────────────────────────────────────────────────────
 def _split_long(text: str) -> list[str]:
     if len(text) <= CHUNK_MAX_CHARS:
         return [text]

@@ -1,8 +1,4 @@
-"""RawJob — 사이트 어댑터가 뱉는 정규화 이전 형태.
-
-사이트별 필드 차이는 전부 여기서 흡수한다.
-market 의 컬럼으로 옮기는 변환은 service.py 책임.
-"""
+# 사이트 어댑터가 넘기는 정규화 전 공고 모델
 
 import hashlib
 from datetime import datetime
@@ -37,7 +33,6 @@ class RawJob(BaseModel):
     published_at: datetime | None = None
     closed_at: datetime | None = None
 
-    # ── 상세에서만 채워지는 것 ────────────────────────────────────────────
     detail_fetched: bool = False
     responsibility: str | None = None
     qualifications: str | None = None
@@ -51,7 +46,6 @@ class RawJob(BaseModel):
     image_urls: list[str] = Field(default_factory=list)
     body_extract_failed: bool = False
 
-    # ── 기업 정보 ────────────────────────────────────────────────────────
     company_service_info: str | None = None
     company_url: str | None = None
     company_establish_date: str | None = None
@@ -63,7 +57,6 @@ class RawJob(BaseModel):
 
     raw: dict = Field(default_factory=dict)
 
-    # ── 파생 ──────────────────────────────────────────────────────────────
     def merged(self, update: dict[str, Any]) -> "RawJob":
         return type(self).model_validate({**self.model_dump(), **update})
 
