@@ -14,7 +14,7 @@
 import logging
 
 from app.core.config import get_settings
-from app.llm.port import EmbedderPort
+from app.llm.embed.port import EmbedderPort
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ __all__ = ["build_embedder"]
 
 
 def build_embedder(*, force_fake: bool = False) -> EmbedderPort:
-    from app.llm.fake import FakeEmbedder
+    from app.llm.embed.fake import FakeEmbedder
 
     settings = get_settings()
 
@@ -34,7 +34,7 @@ def build_embedder(*, force_fake: bool = False) -> EmbedderPort:
         log.warning("GOOGLE_API_KEY 가 없어 FakeEmbedder 를 사용합니다.")
         return FakeEmbedder(dim=settings.embed_dim)
 
-    from app.llm.gemini_embed_adapter import GeminiEmbedder
+    from app.llm.embed.gemini_embed_adapter import GeminiEmbedder
 
     log.info("GeminiEmbedder 를 사용합니다 (model=%s).", settings.gemini_embed_model)
     return GeminiEmbedder()

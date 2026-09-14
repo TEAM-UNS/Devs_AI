@@ -10,10 +10,10 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import get_settings
-from app.llm.embed_adapter import build_embedder
+from app.llm.embed.embed_adapter import build_embedder
 from app.llm.exceptions import UpstreamError
-from app.llm.fake import FakeEmbedder
-from app.llm.gemini_embed_adapter import GeminiEmbedder
+from app.llm.embed.fake import FakeEmbedder
+from app.llm.embed.gemini_embed_adapter import GeminiEmbedder
 
 
 @pytest.fixture(autouse=True)

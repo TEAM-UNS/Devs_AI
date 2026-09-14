@@ -35,7 +35,7 @@ from app.domains.crawler.config import (
 )
 from app.domains.crawler.service import CrawlService
 from app.domains.market import enums, repository
-from app.llm.port import EmbedderPort
+from app.llm.embed.port import EmbedderPort
 
 log = logging.getLogger(__name__)
 

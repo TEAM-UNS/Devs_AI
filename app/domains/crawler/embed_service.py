@@ -36,7 +36,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import get_settings
 from app.domains.crawler.chunker import Chunk, build_chunks, normalize
 from app.domains.market import repository
-from app.llm.port import EmbedderPort
+from app.llm.embed.port import EmbedderPort
 
 log = logging.getLogger(__name__)
 

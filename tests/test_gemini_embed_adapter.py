@@ -22,8 +22,8 @@ import respx
 
 from app.core.config import get_settings
 from app.llm.exceptions import UpstreamError
-from app.llm.gemini_embed_adapter import MAX_BATCH, MAX_INPUT_CHARS, GeminiEmbedder
-from app.llm.port import EmbedderPort
+from app.llm.embed.gemini_embed_adapter import MAX_BATCH, MAX_INPUT_CHARS, GeminiEmbedder
+from app.llm.embed.port import EmbedderPort
 
 _URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:batchEmbedContents"

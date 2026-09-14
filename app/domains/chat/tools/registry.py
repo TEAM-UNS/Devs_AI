@@ -10,7 +10,7 @@
     personal.py  get_skill_gap
     meta.py      get_data_coverage
 
-스펙은 벤더 중립 dict 이며 llm/chat_adapter.py 가 벤더 포맷으로 변환한다.
+스펙은 벤더 중립 dict 이며 llm/generation_adapter.py 가 벤더 포맷으로 변환한다.
 툴 description 은 LLM 이 읽는 유일한 사용설명서다. 특히
     - search_postings: "순위·비율 질문에는 사용 금지" 를 명시
     - get_data_coverage: "시계열·신뢰도 질문 전 선행 호출" 을 명시

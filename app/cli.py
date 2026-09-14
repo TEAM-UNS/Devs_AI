@@ -36,7 +36,7 @@ from app.domains.crawler.sites.jumpit import JumpitCrawler
 from app.domains.crawler.sites.saramin import SaraminCrawler
 from app.domains.crawler.sites.wanted import WantedCrawler
 from app.domains.market import repository, vector_index
-from app.llm.embed_adapter import build_embedder
+from app.llm.embed.embed_adapter import build_embedder
 
 log = logging.getLogger(__name__)
 

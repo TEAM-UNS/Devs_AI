@@ -32,7 +32,7 @@ from app.domains.crawler.tasks import (
     embed_postings,
 )
 from app.domains.market import repository
-from app.llm.embed_adapter import build_embedder
+from app.llm.embed.embed_adapter import build_embedder
 
 log = logging.getLogger(__name__)
 

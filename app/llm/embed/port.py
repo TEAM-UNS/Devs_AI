@@ -1,6 +1,6 @@
 """LLMPort · EmbedderPort — 도메인이 의존하는 유일한 인터페이스 (Protocol).
 
-여기에는 벤더 타입이 절대 들어오지 않는다. 어댑터도 import 하지 않는다(R4).
+여기에는 벤더 타입이 절대 들어오지 않는다. 어댑터도 import 하지 않는다.
 
 LLMPort
     stream(messages, tools, system) -> AsyncIterator[LLMEvent]
@@ -14,7 +14,7 @@ EmbedderPort
         - 문서/질의 입력 타입을 구분하는 모델이 있어 메서드를 나눈다
         - 차원은 settings.EMBED_DIM 과 일치해야 한다 (어댑터가 검증한다)
 
-구현체: chat_adapter.py · embed_adapter.py · fake.py
+구현체: generation_adapter.py · embed_adapter.py · fake.py
 """
 
 from collections.abc import Sequence
@@ -23,6 +23,7 @@ from typing import Protocol, runtime_checkable
 Vector = list[float]
 
 
+# 테스트가 isinstance 로 어댑터의 계약 준수를 확인한다 (test_satisfies_the_port).
 @runtime_checkable
 class EmbedderPort(Protocol):
     async def embed_documents(self, texts: Sequence[str]) -> list[Vector]:

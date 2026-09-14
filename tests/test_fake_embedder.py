@@ -9,8 +9,8 @@ from __future__ import annotations
 import math
 
 from app.core.config import get_settings
-from app.llm.fake import FakeEmbedder
-from app.llm.port import EmbedderPort
+from app.llm.embed.fake import FakeEmbedder
+from app.llm.embed.port import EmbedderPort
 
 
 def test_satisfies_the_port() -> None:
