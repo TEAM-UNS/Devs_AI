@@ -1,16 +1,4 @@
-"""임베딩 파이프라인 전체 — FakeEmbedder 로 API 키 없이 돌린다.
-
-실 postgres+pgvector 를 쓴다. vector 컬럼과 부분 인덱스는 sqlite 로 대체
-검증이 불가능하다. 접속이 안 되면 conftest 의 db 픽스처가 skip 한다.
-
-여기서 못 박는 것
-    - 청크 생성 · 섹션 분포
-    - **배치**: 공고 N건이 API 1회로 묶인다 (공고당 1회면 안 된다)
-    - **멱등**: 같은 명령 두 번째는 0건 · API 0회
-    - 본문 변경 시 바뀐 청크만 재임베딩 (chunk_hash)
-    - 본문이 짧아지면 남은 청크 삭제
-    - body_is_image · description IS NULL · body_extract_failed 제외
-"""
+# 임베딩 파이프라인 테스트
 
 from __future__ import annotations
 
@@ -35,7 +23,6 @@ BODY_V1 = """[주요업무]
 - Kubernetes 운영 경험
 """
 
-# 자격요건만 바꾼 버전. responsibility · preferred 청크는 그대로여야 한다.
 BODY_V2 = """[주요업무]
 - 결제 서버 API 개발 및 운영
 
@@ -46,7 +33,6 @@ BODY_V2 = """[주요업무]
 - Kubernetes 운영 경험
 """
 
-# 섹션이 하나만 남은 버전. 나머지 청크는 삭제되어야 한다.
 BODY_SHRUNK = """[주요업무]
 - 결제 서버 API 개발 및 운영
 """
@@ -57,8 +43,6 @@ def _hash(body: str) -> str:
 
 
 class _Fixture:
-    """테스트가 만든 공고 id 들. 끝나면 전부 지운다."""
-
     def __init__(self) -> None:
         self.tag = uuid.uuid4().hex[:12]
         self.ids: list[int] = []
@@ -66,10 +50,6 @@ class _Fixture:
 
 @pytest.fixture
 async def postings(db) -> AsyncIterator[_Fixture]:
-    """테스트 전용 공고를 심고, 끝나면 지운다.
-
-    실 데이터와 섞이지 않도록 source_job_id 에 uuid 를 박는다.
-    """
     fixture = _Fixture()
     yield fixture
 
@@ -137,9 +117,7 @@ async def _vector_is_set(posting_id: int) -> bool:
     return row[0] == 0
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 async def test_full_pipeline_with_fake_embedder(postings, fake_embedder) -> None:
-    """청크 생성 → 임베딩 → 저장 → embed_hash 마감."""
     posting_id = await _insert(postings, body=BODY_V1)
 
     stats = await embed_service.embed_postings(
@@ -158,7 +136,6 @@ async def test_full_pipeline_with_fake_embedder(postings, fake_embedder) -> None
 
 
 async def test_second_run_is_a_no_op(postings, fake_embedder) -> None:
-    """★ 같은 명령을 두 번 실행하면 두 번째는 0건 · API 0회."""
     posting_id = await _insert(postings, body=BODY_V1)
     await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     calls_after_first = fake_embedder.call_count
@@ -174,10 +151,6 @@ async def test_second_run_is_a_no_op(postings, fake_embedder) -> None:
 
 
 async def test_many_postings_share_one_api_call(postings, fake_embedder) -> None:
-    """★ 배치. 공고 1건당 API 1회를 부르는 구조면 안 된다.
-
-    공고 10건 × 3청크 = 30청크 → 96개 상한 안이므로 호출은 1회여야 한다.
-    """
     ids = [await _insert(postings, body=BODY_V1 + f"\n- 항목 {i}") for i in range(10)]
 
     stats = await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=ids)
@@ -190,7 +163,6 @@ async def test_many_postings_share_one_api_call(postings, fake_embedder) -> None
 
 
 async def test_batch_size_is_respected(postings, fake_embedder) -> None:
-    """96개를 넘으면 호출이 나뉜다. 40공고 × 3청크 = 120청크 → 2회."""
     ids = [await _insert(postings, body=BODY_V1 + f"\n- 항목 {i}") for i in range(40)]
 
     stats = await embed_service.embed_postings(
@@ -202,7 +174,6 @@ async def test_batch_size_is_respected(postings, fake_embedder) -> None:
 
 
 async def test_only_changed_chunk_is_re_embedded(postings, fake_embedder) -> None:
-    """자격요건만 바뀌면 청크 1개만 다시 부른다 (chunk_hash 비교)."""
     posting_id = await _insert(postings, body=BODY_V1)
     await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     before = await _chunks(posting_id)
@@ -230,10 +201,6 @@ async def test_only_changed_chunk_is_re_embedded(postings, fake_embedder) -> Non
 
 
 async def test_shrunk_body_deletes_stale_chunks(postings, fake_embedder) -> None:
-    """본문이 짧아지면 남은 청크를 지운다.
-
-    안 지우면 원문에 없는 문장이 검색 근거로 계속 인용된다.
-    """
     posting_id = await _insert(postings, body=BODY_V1)
     await embed_service.embed_postings(get_worker_session, fake_embedder, posting_ids=[posting_id])
     assert len(await _chunks(posting_id)) == 3
@@ -254,7 +221,6 @@ async def test_shrunk_body_deletes_stale_chunks(postings, fake_embedder) -> None
     assert [c[0] for c in await _chunks(posting_id)] == ["responsibility"]
 
 
-# ── 제외 대상 ───────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     ("body", "overrides"),
     [
@@ -279,7 +245,6 @@ async def test_excluded_postings_are_never_targets(
 
 
 async def test_body_without_embeddable_section_closes_hash(postings, fake_embedder) -> None:
-    """복지만 있는 본문은 청크가 0개다. 백필이 매일 다시 집지 않게 닫는다."""
     posting_id = await _insert(postings, body="복리후생\n- 점심 제공\n- 야근 없음")
 
     stats = await embed_service.embed_postings(

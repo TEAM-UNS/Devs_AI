@@ -1,8 +1,4 @@
-"""스택 추출기 테스트.
-
-DB 를 쓰지 않는다. 시드 카탈로그(SKILL_CATALOG)로 매처를 만들어 검증하므로,
-별칭을 추가하면 이 테스트가 실제 사전을 그대로 검증한다.
-"""
+# 스킬 추출기 테스트
 
 from __future__ import annotations
 
@@ -25,7 +21,6 @@ matcher = SkillMatcher.from_catalog()
 
 
 def extract(description: str | None = None, tags: tuple[str, ...] = ()) -> dict[str, Requirement]:
-    """스킬명 → requirement 로 납작하게 만든다."""
     return {
         hit.name: hit.requirement for hit in matcher.extract(description=description, tags=tags)
     }
@@ -35,9 +30,6 @@ def names(description: str | None = None, tags: tuple[str, ...] = ()) -> set[str
     return set(extract(description, tags))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  섹션 분할
-# ═══════════════════════════════════════════════════════════════════════════
 POSTING = """\
 [주요업무]
 - 백엔드 API 설계 및 운영
@@ -71,9 +63,6 @@ def test_no_header_becomes_single_body_block():
     assert [s for s, _ in sections] == [Section.BODY]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  등급 부여
-# ═══════════════════════════════════════════════════════════════════════════
 def test_qualification_section_is_required():
     result = extract(POSTING)
     assert result["Java"] is Requirement.REQUIRED
@@ -87,12 +76,9 @@ def test_preferred_section_is_preferred():
 
 
 def test_ignore_section_is_dropped():
-    """복지 섹션의 협업툴·도서지원 문구가 스택으로 잡히면 안 된다."""
     found = names(POSTING)
     assert "Notion" not in found
     assert "Slack" not in found
-    # "자바 도서구입비" 의 자바도 복지 섹션이므로 제외된다.
-    # Java 는 자격요건에서 잡힌 것이지 복지에서 잡힌 게 아니다.
     assert extract(POSTING)["Java"] is Requirement.REQUIRED
 
 
@@ -102,7 +88,6 @@ def test_welfare_only_skill_is_not_extracted():
 
 
 def test_site_tag_beats_body_grade():
-    """사이트 태그는 최상위 등급이다."""
     result = extract(POSTING, tags=("Kotlin",))
     assert result["Kotlin"] is Requirement.TAG
 
@@ -111,9 +96,6 @@ def test_grade_priority_is_tag_then_required_then_preferred():
     assert Grade.TAG > Grade.REQUIRED > Grade.PREFERRED > Grade.BODY
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  경계 · 긴 별칭 우선
-# ═══════════════════════════════════════════════════════════════════════════
 def test_javascript_is_not_java():
     found = names("[자격요건]\nJavaScript 개발 경험이 필요합니다")
     assert "JavaScript" in found
@@ -146,20 +128,15 @@ def test_special_character_aliases(text, expected):
 
 
 def test_alias_inside_word_is_not_matched():
-    """앞뒤가 영숫자면 매칭되지 않는다."""
     assert "C" not in names("[자격요건]\nABC 시스템 개발 경험")
     assert "R" not in names("[자격요건]\nHR 시스템 개발 경험")
 
 
 def test_korean_particle_after_alias_still_matches():
-    """ "Java를", "코틀린으로" 처럼 조사가 붙어도 잡혀야 한다."""
     found = names("[자격요건]\nJava를 사용하고 코틀린으로 전환한 경험")
     assert {"Java", "Kotlin"} <= found
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  모호 스킬 문맥 검사
-# ═══════════════════════════════════════════════════════════════════════════
 def test_ambiguous_go_without_context_is_rejected():
     assert "Go" not in names("[자격요건]\nGo to the office")
 
@@ -173,13 +150,9 @@ def test_ambiguous_c_with_context_is_accepted():
 
 
 def test_ambiguous_skill_from_site_tag_skips_context_check():
-    """사이트가 붙인 태그는 문맥 없이도 신뢰한다."""
     assert "Go" in names(None, tags=("Go",))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  mentions
-# ═══════════════════════════════════════════════════════════════════════════
 def test_mentions_counts_occurrences():
     body = "[자격요건]\nPython 개발 경험\n[우대사항]\nPython 으로 데이터 처리 경험"
     hit = next(h for h in matcher.extract(description=body) if h.name == "Python")
@@ -187,9 +160,6 @@ def test_mentions_counts_occurrences():
     assert hit.requirement is Requirement.REQUIRED  # 더 높은 등급이 이긴다
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  부가 정규화
-# ═══════════════════════════════════════════════════════════════════════════
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -211,7 +181,6 @@ def test_normalize_company_name(raw, expected):
         (["안드로이드 개발자"], TechField.MOBILE),
         (["정보보안 담당자"], TechField.SECURITY),
         (["HW/임베디드"], TechField.EMBEDDED),
-        # 최다 득표. 백엔드가 2표, 나머지가 1표씩이다.
         (["서버/백엔드 개발자", "백엔드 엔지니어", "프론트엔드 개발자"], TechField.BACKEND),
         (["개발 PM"], None),
         ([], None),
@@ -221,19 +190,14 @@ def test_map_tech_field(categories, expected):
     assert map_tech_field(categories) is expected
 
 
-# ★ 동점 처리 — 사이트가 한 공고에 카테고리를 여러 개 준다(2개 이상이 40%).
-#   예전에는 _FIELD_RULES 배열 순서로 첫 매칭을 썼고, 그래서
-#   ['서버/백엔드 개발자', '프론트엔드 개발자'] 가 전부 frontend 로 갔다.
 @pytest.mark.parametrize(
     ("categories", "title", "expected"),
     [
-        # 1:1 동점이면 제목이 가른다.
         (["서버/백엔드 개발자", "프론트엔드 개발자"], "Python 백엔드 개발자", TechField.BACKEND),
         (["서버/백엔드 개발자", "프론트엔드 개발자"], "프론트엔드 개발자", TechField.FRONTEND),
-        # 제목도 못 정하면 미분류. 억지로 하나를 고르면 그게 곧 편향이다.
+        # 동점인데 제목으로도 못 가르면 억지로 고르지 않고 미분류
         (["서버/백엔드 개발자", "프론트엔드 개발자"], "광학 어플리케이션 엔지니어", None),
         (["DBA", "devops/시스템 엔지니어", "서버/백엔드 개발자"], "", None),
-        # 카테고리가 비면 제목으로 판단한다(원티드는 전량 빈 배열).
         ([], "웹(Web) 백엔드 개발자", TechField.BACKEND),
         ([], "[개발 본부] DevOps Engineer", TechField.DEVOPS),
         ([], "Senior Engineer", None),
@@ -243,7 +207,6 @@ def test_map_tech_field_uses_title(categories, title, expected):
     assert map_tech_field(categories, title) is expected
 
 
-# ★ "ai" 가 Sustainable · Maintainer 에 부분문자열로 걸려 data_ai 로 새던 것.
 @pytest.mark.parametrize(
     "title",
     [
@@ -255,8 +218,6 @@ def test_ai_keyword_needs_word_boundary(title):
     assert map_tech_field([], title) is TechField.BACKEND
 
 
-# 명세 2-4 "연봉 정규화 규칙" 표 전체.
-# min/max 는 항상 연봉 만원 단위다.
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -277,14 +238,12 @@ def test_parse_salary_normalization_table(raw, expected):
 
 
 def test_monthly_salary_is_annualized():
-    """월급이 그대로 저장되면 연봉 3,600 짜리가 300 으로 들어가 중앙값이 망가진다."""
     low, high, _, period = parse_salary("월 300만원")
     assert (low, high) == (3600, 3600)
     assert period is SalaryPeriod.MONTHLY
 
 
 def test_hourly_amount_is_discarded():
-    """시급은 근무시간을 몰라 연환산이 불가능하다. 기간만 남기고 금액은 버린다."""
     low, high, salary_type, period = parse_salary("시급 12,000원")
     assert (low, high) == (None, None)
     assert salary_type is SalaryType.UNKNOWN
@@ -292,20 +251,13 @@ def test_hourly_amount_is_discarded():
 
 
 def test_implausible_amount_is_rejected():
-    """원 단위 표기를 만원으로 잘못 읽지 않는다."""
     assert parse_salary("30,000,000원")[:2] == (None, None)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  4값 등급
-# ═══════════════════════════════════════════════════════════════════════════
 def test_body_grade_is_no_longer_flattened_into_preferred():
-    """주요업무에서 잡힌 스킬은 body 다. preferred 로 뭉개지면 안 된다."""
     result = extract(POSTING)
-    # POSTING 의 주요업무는 "백엔드 API 설계 및 운영" 이라 스킬이 없다.
     body = "[주요업무]\n- Kubernetes 클러스터 위에서 서비스를 운영합니다"
     assert extract(body)["Kubernetes"] is Requirement.BODY
-    # 자격요건은 그대로 required
     assert result["Java"] is Requirement.REQUIRED
 
 
@@ -313,11 +265,7 @@ def test_requirement_has_four_values():
     assert {r.value for r in Requirement} == {"tag", "required", "preferred", "body"}
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  대소문자 구분 별칭
-# ═══════════════════════════════════════════════════════════════════════════
 def test_lowercase_can_in_english_sentence_is_not_matched():
-    """ "you can use..." 의 can 이 차량용 CAN 으로 잡히면 안 된다."""
     body = "[자격요건]\nYou can use any language you prefer for development"
     assert "CAN" not in names(body)
 
@@ -336,37 +284,26 @@ def test_uppercase_es_is_matched():
 
 
 def test_lowercase_single_letters_are_not_matched():
-    """소문자 c · r 은 영어 문장에서 너무 흔하다."""
     body = "[자격요건]\nsection c and r of the development handbook"
     assert "C" not in names(body)
     assert "R" not in names(body)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  is_common
-# ═══════════════════════════════════════════════════════════════════════════
 def test_common_tools_are_flagged():
     flagged = {s.name for s in SKILL_CATALOG if s.is_common}
     assert flagged == {"Git", "Jira", "Slack", "Notion", "Confluence"}
 
 
 def test_figma_and_linux_are_not_common():
-    """직군 신호가 있는 도구는 트렌드에서 빼면 정보가 사라진다."""
     not_common = {s.name for s in SKILL_CATALOG if not s.is_common}
     assert {"Figma", "Linux"} <= not_common
 
 
 def test_common_tools_are_still_extracted():
-    """추출은 한다. 제외는 집계 쿼리(get_popular_skills)의 몫이다."""
     assert "Slack" in names("[자격요건]\nSlack 으로 협업한 경험")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  IGNORE 헤더 오탐 (process 부분일치)
-# ═══════════════════════════════════════════════════════════════════════════
 def test_body_line_containing_processing_is_not_a_welfare_header():
-    """★ 실측 버그. process 가 Processing·Processor 안에 걸려 업무 줄이 복지
-    헤더로 오인되고, 그 줄부터 다음 헤더까지 통째로 버려졌다 (115건 · 3.3만자)."""
     for line in (
         "• 가상머신 Processor, Peripheral 개발",
         "- Capability of sensor-based signal processing and analysis.",

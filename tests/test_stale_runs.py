@@ -1,9 +1,4 @@
-"""죽은 태스크가 남긴 running 행 정리 (worker.startup 이 부른다).
-
-워커가 SIGKILL 되거나 컨테이너가 재시작되면 finish_run 이 불리지 못해
-crawl_run 이 영원히 running 으로 남는다. 실제로 워커를 재시작했을 때
-running 두 건이 남는 것을 보고 붙였다.
-"""
+# 멈춘 수집 실행 정리 테스트
 
 from __future__ import annotations
 
@@ -69,10 +64,6 @@ async def test_old_running_row_is_failed(cleanup) -> None:
 
 
 async def test_recent_running_row_is_left_alone(cleanup) -> None:
-    """★ 지금 돌고 있는 실행을 죽이면 안 된다.
-
-    기준을 job_timeout 보다 길게 잡는 이유가 이것이다.
-    """
     run_id = await _make_run(minutes_ago=1, status=enums.RunStatus.RUNNING)
 
     async with get_worker_session() as session:
