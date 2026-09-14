@@ -85,18 +85,6 @@ ai-service/
 └── tests/
 ```
 
-### 의존 규칙
-
-| 규칙 | 내용 |
-|---|---|
-| R1 | `market` 은 아무 도메인도 import 하지 않는다 |
-| R2 | `crawler` → `market.repository` (쓰기)만 |
-| R3 | `chat` → `market.queries` (읽기)만. `market.models` / `repository` 직접 참조 금지 |
-| R4 | `llm/port.py` 는 어댑터를 모른다. 주입만 받는다 |
-| R5 | Enum·비즈니스 상수는 소유 도메인에 (`market/enums.py`, `chat/enums.py`) |
-
-> R3은 `import-linter` 로 CI에서 강제 권장
-
 ---
 
 ## 2. 기능 명세서

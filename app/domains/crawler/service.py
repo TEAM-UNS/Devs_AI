@@ -1,4 +1,4 @@
-"""수집 오케스트레이션: sites → extractor → market.repository (R2).
+"""수집 오케스트레이션: sites → extractor → market.repository.
 
 한 페이지 처리 흐름
     1. 목록 수집

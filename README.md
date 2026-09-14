@@ -250,7 +250,7 @@ ai-service/
 ├── docker-compose.yml   postgres(pgvector) + redis
 ├── init.sql             extension · schema(market/chat) · 테이블 · 인덱스 · 롤
 ├── alembic/             마이그레이션 (baseline 은 init.sql)
-├── pyproject.toml       의존성 + import-linter 계약(R1~R4)
+├── pyproject.toml       의존성
 ├── app/
 │   ├── main.py          FastAPI 조립
 │   ├── worker.py        arq WorkerSettings · cron
@@ -263,29 +263,12 @@ ai-service/
 └── tests/
 ```
 
-## 의존 규칙
-
-| 규칙 | 내용 |
-|---|---|
-| R1 | `market` 은 아무 도메인도 import 하지 않는다 |
-| R2 | `crawler` → `market.repository` (쓰기)만 |
-| R3 | `chat` → `market.queries` (읽기)만. `market.models` / `repository` 직접 참조 금지 |
-| R4 | `llm/port.py` 는 어댑터를 모른다. 주입만 받는다 |
-| R5 | Enum·비즈니스 상수는 소유 도메인에 (`market/enums.py`, `chat/enums.py`) |
-
-CI에서 강제:
-
-```bash
-uv run lint-imports
-```
-
-R3 은 DB 레벨에서도 강제된다. 운영 접속을 `ai_crawler`(market RW) /
-`ai_chat`(market RO + chat RW) 로 분리하면 챗봇은 쓰기 자체가 불가능하다.
-
 ## DB 메모
 나도 개발해야되서 걍 임시 DB 만들어둠.<br>
 백엔드쪽에서 DB 만들면 버릴 예정
 
+- 운영 접속은 `ai_crawler`(market RW) / `ai_chat`(market RO + chat RW) 로 분리한다.
+  챗봇 쪽 롤은 market 에 쓰기 자체가 불가능하다.
 - 벡터 차원은 **1024 고정**. `.env` 의 `EMBED_DIM` 과 `init.sql` 의
   `vector(1024)` 가 어긋나면 INSERT 단계에서 터진다.
 - 벡터 인덱스는 HNSW(코사인). **마이그레이션이 만들지 않는다** —

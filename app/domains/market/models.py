@@ -13,7 +13,7 @@ DDL 원본은 루트 init.sql. 이 파일은 그와 1:1로 대응해야 한다.
     crawl_run        수집·임베딩 실행 이력
 
 규칙
-    - 이 모듈은 다른 도메인을 import 하지 않는다 (R1)
+    - 이 모듈은 다른 도메인을 import 하지 않는다
     - CHECK 제약 문자열은 enums.py + core.database.sql_in 으로 생성한다
     - HNSW · 부분 · GIN 인덱스는 __table_args__ 에 명시한다
     - updated_at 갱신은 DB 트리거(public.touch_updated_at)가 담당한다

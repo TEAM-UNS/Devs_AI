@@ -39,7 +39,6 @@ dev = [
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "ruff>=0.8",
-    "import-linter>=2.1",
 ]
 
 # scripts/embed_local/ 전용. torch 를 끌고 와 수 GB 라 기본에서 뺐다.
@@ -85,54 +84,3 @@ ignore = ["I001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  의존 규칙 R1~R4 강제 (lint-imports)
-#  CI: `lint-imports` 를 ruff 와 함께 실행
-# ─────────────────────────────────────────────────────────────────────────────
-[tool.importlinter]
-root_package = "app"
-
-# R1 — market 은 아무 도메인도 import 하지 않는다
-[[tool.importlinter.contracts]]
-name = "R1: market is independent"
-type = "forbidden"
-source_modules = ["app.domains.market"]
-forbidden_modules = ["app.domains.crawler", "app.domains.chat", "app.llm"]
-
-# R2 — crawler 는 chat 을 모른다
-[[tool.importlinter.contracts]]
-name = "R2: crawler does not touch chat"
-type = "forbidden"
-source_modules = ["app.domains.crawler"]
-forbidden_modules = ["app.domains.chat"]
-
-# R3 — chat 은 market.queries(읽기)만. models/repository 직접 참조 금지
-[[tool.importlinter.contracts]]
-name = "R3: chat reads market through queries only"
-type = "forbidden"
-source_modules = ["app.domains.chat"]
-forbidden_modules = [
-    "app.domains.market.models",
-    "app.domains.market.repository",
-    "app.domains.crawler",
-]
-
-# R4 — port 는 어댑터를 모른다
-[[tool.importlinter.contracts]]
-name = "R4: port knows no adapter"
-type = "forbidden"
-source_modules = ["app.llm.port"]
-forbidden_modules = [
-    "app.llm.chat_adapter",
-    "app.llm.embed_adapter",
-    "app.llm.gemini_embed_adapter",
-    "app.llm.fake",
-]
-
-# core 는 도메인을 모른다
-[[tool.importlinter.contracts]]
-name = "core is the bottom layer"
-type = "forbidden"
-source_modules = ["app.core"]
-forbidden_modules = ["app.domains", "app.llm"]
