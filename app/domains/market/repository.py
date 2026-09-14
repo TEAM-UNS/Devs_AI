@@ -1,12 +1,4 @@
-"""쓰기 담당 — 크롤러/임베딩 전용. (챗봇은 접근 금지)
-
-전부 postgres 의 INSERT ... ON CONFLICT 를 쓴다.
-"먼저 SELECT 해서 있으면 UPDATE" 는 동시 실행 시 경합이 나므로 쓰지 않는다.
-
-부분 갱신 규칙
-    상세 수집에 실패하면 description 같은 필드가 None 으로 온다. 그때
-    기존 값을 지우면 안 되므로 COALESCE(신규, 기존) 으로 덮어쓴다.
-"""
+# 크롤러와 임베딩이 쓰는 쓰기 쿼리
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -32,7 +24,7 @@ from app.domains.market.models import (
 )
 from app.domains.market.schemas import SkillDictionaryRow, UnmatchedTag
 
-# ★ INSERT 에 넣는 컬럼은 여기나 upsert_posting 의 set_ 둘 중 하나에 반드시
+# None 이 와도 기존 값을 지우지 않는 컬럼. 새 컬럼은 여기나 _conflict_update_set 에 꼭 넣는다
 _COALESCE_ON_UPDATE = (
     "description",
     "welfare",
@@ -50,13 +42,11 @@ _COALESCE_ON_UPDATE = (
 )
 
 
-# ── 분류 ────────────────────────────────────────────────────────────────────
 async def get_field_ids(session: AsyncSession) -> dict[str, int]:
     rows = (await session.exec(select(TechField.code, TechField.id))).all()
     return {code: fid for code, fid in rows}
 
 
-# ── 기업 ────────────────────────────────────────────────────────────────────
 async def upsert_company(
     session: AsyncSession,
     *,
@@ -123,7 +113,6 @@ async def upsert_company_source(
     await session.exec(stmt)
 
 
-# ── 스킬 ────────────────────────────────────────────────────────────────────
 async def upsert_skills(session: AsyncSession, names: Iterable[str]) -> dict[str, int]:
     unique = sorted({n.strip() for n in names if n and n.strip()})
     if not unique:
@@ -204,8 +193,6 @@ async def count_unmatched_tags(
     return unmatched, total, matched_count
 
 
-# 본문 스캔에서 걸러낼 일반 단어. 기술명이 아니라 영어 산문·직무 용어다.
-# 완전하지 않아도 된다 — 사람이 읽는 후보 목록이라 상위권만 조용해지면 쓸 만하다.
 _BODY_STOPWORDS = frozenset(
     """
     and the with for you our are can will not that this from have has your who its all any
@@ -226,16 +213,6 @@ _BODY_STOPWORDS = frozenset(
 async def count_unmatched_body_terms(
     session: AsyncSession, *, source: str | None = None, min_count: int = 10, limit: int = 200
 ) -> list[UnmatchedTag]:
-    """공고 본문에서 사전에 없는데 자주 나오는 기술 후보를 뽑는다.
-
-    ★ count_unmatched_tags 는 tags_raw 만 본다. 그런데 최근에 뜬 기술일수록
-      사이트 태그 목록에는 아직 없고 본문에만 적힌다. 실제로 RAG(611건) ·
-      pgvector(23건) 같은 벡터 스택이 통째로 누락돼 있었는데, 태그 리포트에는
-      한 건도 안 떴다. 본문을 봐야 그 구멍이 보인다.
-
-    태그와 달리 정답이 깔끔하지 않다. 영문 토큰만 보고 불용어를 걸러도 노이즈가
-    남는다. 사람이 읽고 판단하는 후보 목록일 뿐 자동 등재용이 아니다.
-    """
     where_source = "AND p.source = :source" if source else ""
     sql = text(
         f"""
@@ -361,7 +338,6 @@ async def iter_postings_for_reparse(
         JobPosting.tags_raw,
         JobPosting.raw_fields,
         JobPosting.field_id,
-        # 분야 분류의 보조 신호. 카테고리가 비었거나 동점일 때 제목으로 가른다.
         JobPosting.title,
     )
     if source:
@@ -438,7 +414,6 @@ async def replace_posting_skills(
     )
 
 
-# ── 공고 ────────────────────────────────────────────────────────────────────
 async def get_content_hashes(
     session: AsyncSession, source: str, source_job_ids: Sequence[str]
 ) -> dict[str, str | None]:
@@ -507,7 +482,6 @@ async def upsert_posting(session: AsyncSession, values: dict[str, Any]) -> int:
     return posting_id if isinstance(posting_id, int) else posting_id[0]
 
 
-# ── 임베딩 ──────────────────────────────────────────────────────────────────
 def _embeddable_posting_clause() -> Any:
     return and_(
         JobPosting.description.is_not(None),
@@ -628,20 +602,11 @@ async def set_posting_embed_hash(session: AsyncSession, posting_id: int, embed_h
 
 
 async def clear_posting_embed_hash(session: AsyncSession, posting_ids: Sequence[int]) -> int:
-    """재임베딩 대상으로 되돌린다.
-
-    ★ 파서·청커를 고치면 content_hash 는 그대로인데 청크 내용만 달라진다.
-      embed_hash 를 비워 주지 않으면 _needs_embedding_clause 가 거짓이라
-      그 공고는 영영 옛 벡터를 들고 있는다. 코드는 고쳐졌는데 데이터는
-      안 고쳐진 상태가 조용히 유지된다.
-    """
     if not posting_ids:
         return 0
     result = await session.exec(
         JobPosting.__table__.update()
-        # ★ 임베딩 대상이 아닌 공고(이미지 본문 · 추출 실패)는 애초에 청크가
-        #   없어 "달라졌다" 로 잡힌다. 걸러내지 않으면 할 일이 없는데도
-        #   "91건 되돌렸다" 는 거짓 보고가 나간다.
+        # 임베딩 대상이 아닌 공고는 청크가 없어 늘 달라진 것으로 잡히므로 거른다
         .where(JobPosting.id.in_(list(posting_ids)), _embeddable_posting_clause())
         .values(embed_hash=None)
     )
@@ -729,7 +694,6 @@ async def count_chunks_by_section(session: AsyncSession) -> list[tuple[str, int]
     return [(str(section), int(count)) for section, count in rows]
 
 
-# ── 실행 이력 ───────────────────────────────────────────────────────────────
 async def start_run(
     session: AsyncSession,
     *,

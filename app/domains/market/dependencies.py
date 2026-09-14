@@ -1,3 +1,5 @@
+# market 쿼리 FastAPI 의존성
+
 from typing import Annotated
 
 from fastapi import Depends

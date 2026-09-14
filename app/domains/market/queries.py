@@ -1,33 +1,4 @@
-"""★ 읽기 전용 — 챗봇 툴의 유일한 DB 진입점.
-
-ORM 엔티티가 아니라 schemas.py 의 DTO 를 반환한다.
-집계는 여기서 SQL 로 끝낸다. 툴 함수는 조립만 한다.
-
-트렌드
-    popular_skills(field, size_type, career_level, days, top)
-    rising_skills(field, min_count, top)      2주 구간 비교 + (this+1)/(last+1)-1
-    stacks_by_segment(group_by, field, top)   size · career · location
-    salary_stats(...)                         중앙값/사분위 + disclosure_rate
-                                              (salary_type != negotiable 만 집계,
-                                               분모는 전체 공고수)
-기술 관계
-    related_skills(skill, field, requirement, top)   동시출현 + NPMI
-    skill_demand(skill)                              분야·규모·경력 분포
-    resolve_skill(query_vec)                         skill.embedding 코사인
-
-기업
-    company_profile(name)          동명 다수면 후보 목록 반환
-    similar_companies(company_id)  similarity.py 에 위임
-    compare_companies(ids)
-    search_companies(query_vec, filters)   pgvector + 메타 필터 한 쿼리
-
-탐색·메타
-    search_postings(query_vec, filters, section)  posting_chunk 벡터 검색
-    skill_gap(my_skills, field, company_ids)      requirement in (required, tag)
-    data_coverage()                               수집 기간 · 총 공고수 · 최종 수집시각
-
-주의: 표본이 작은 결과에는 sample_size 를 반드시 함께 실어 보낸다.
-"""
+# 챗봇 툴이 쓰는 읽기 전용 쿼리
 
 import math
 from datetime import UTC, datetime, timedelta
@@ -92,40 +63,29 @@ from app.domains.market.schemas import (
 )
 
 
-# 공용 표현식 
 APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
 
 _DISCLOSED = (SalaryType.RANGE, SalaryType.MIN_ONLY, SalaryType.MAX_ONLY)
 
 _DEMAND = (Requirement.TAG, Requirement.REQUIRED, Requirement.PREFERRED)
 
-# "실제로 요구되는 것". 우대사항까지 빼고 필수만 본다. 학습 우선순위·기업 비교용.
 _STRICT = (Requirement.TAG, Requirement.REQUIRED)
 
-# 증감률 = (recent + K) / (previous + K) - 1
-# ★ K 없이 나누면 지난 구간 0건이던 스킬이 이번에 1건만 나와도 증가율이 무한대가
-#   되어 상위권을 잡음이 채운다. K=1 은 "1건은 우연일 수 있다" 는 최소한의 스무딩.
+# K 없이 나누면 지난 구간 0건인 스킬이 무한대 증가율이 된다
 _RISING_SMOOTHING = 1
 _RISING_WINDOW_DAYS = 7
 _RISING_MIN_COUNT = 5
 
-# NPMI 계산에 넣을 최소 동시출현 횟수. 1~2회 함께 나온 쌍은 희소할수록 PMI 가
-# 커지는 성질 때문에 높게 계산되지만 실제로는 우연이다.
 _NPMI_MIN_COOCCURRENCE = 3
 
-# 공고당 청크가 ~3개라, 공고 top 개를 채우려면 청크를 넉넉히 뽑아 중복을 걷어낸다.
 _SEARCH_CHUNKS_PER_POSTING = 4
 
 _EVIDENCE_CHARS = 200
 
 _SHARED_SKILLS = 5
 
-# 집계에 들어간 표본이 이보다 적으면 low_confidence 를 실어 보낸다. 툴 결과를
-# 읽는 것은 사람이 아니라 LLM 이라, 근거를 주지 않으면 표본 3건짜리 중앙값도
-# 단정적으로 말한다.
 _LOW_CONFIDENCE_SAMPLE = 10
 
-# salary_min/max 의 단위. 저장 시 연봉 만원으로 통일한다.
 _SALARY_UNIT = "만원"
 
 _CAREER_RANGES: dict[CareerLevel, tuple[int, Optional[int]]] = {
@@ -320,7 +280,6 @@ class ChatQueries:
     async def resolve_skill(
         self, query_vec: Sequence[float], top: int = 5
     ) -> list[SkillCandidate]:
-        # 사전 일치(resolve_skill_name)가 실패했을 때의 후보 제시용. 165행이라 인덱스 없이 스캔한다.
         distance = Skill.embedding.cosine_distance(list(query_vec))
         rows = (
             await self.session.exec(
@@ -419,7 +378,7 @@ class ChatQueries:
                 parts.append(func.coalesce(JobPosting.career_min, 0) <= high)
             conditions[level.value] = and_(*parts)
         return conditions
-    # ── 급상승 기술 ────────────────────────────────────────────────────────
+
     async def rising_skills(
         self,
         field: Optional[TechFieldCode] = None,
@@ -428,7 +387,6 @@ class ChatQueries:
         top: int = 10,
         include_common: bool = False,
     ) -> RisingSkills:
-        """이번 N일 vs 직전 N일 비교. 증감률 = (recent+1)/(previous+1)-1."""
         now = datetime.now(UTC)
         recent_from = now - timedelta(days=window_days)
         previous_from = now - timedelta(days=window_days * 2)
@@ -502,11 +460,9 @@ class ChatQueries:
             window_days=window_days,
             recent_postings=recent_postings,
             previous_postings=previous_postings,
-            # ★ 어느 한쪽 구간이라도 표본이 얇으면 증감률을 믿을 수 없다.
             low_confidence=min(recent_postings, previous_postings) < _LOW_CONFIDENCE_SAMPLE * 10,
         )
 
-    # ── 세그먼트별 스택 ────────────────────────────────────────────────────
     async def stacks_by_segment(
         self,
         group_by: str = "size",
@@ -515,7 +471,6 @@ class ChatQueries:
         days: Optional[int] = 30,
         include_common: bool = False,
     ) -> StacksBySegment:
-        """size · career · location 세그먼트마다 상위 스킬을 뽑는다."""
         if group_by not in ("size", "career", "location"):
             raise ValueError(f"group_by 는 size · career · location 중 하나여야 합니다: {group_by}")
 
@@ -527,7 +482,6 @@ class ChatQueries:
             base.append(Skill.is_common.is_(False))
 
         if group_by == "career":
-            # 경력은 구간이 겹쳐 GROUP BY 로 못 나눈다. 구간마다 따로 집계한다.
             segments = []
             for level, condition in self._career_conditions().items():
                 segments.append(await self._segment_stacks(level, base + [condition], top))
@@ -537,7 +491,6 @@ class ChatQueries:
             label = Company.size_type
             extra_join = (Company, Company.id == JobPosting.company_id)
         else:
-            # "서울 강남구" → "서울". 구 단위로 쪼개면 세그먼트가 너무 잘게 나뉜다.
             label = func.split_part(JobPosting.location, " ", 1)
             extra_join = None
 
@@ -603,7 +556,6 @@ class ChatQueries:
             ],
         )
 
-    # ── 연봉 통계 ──────────────────────────────────────────────────────────
     async def salary_stats(
         self,
         field: Optional[TechFieldCode] = None,
@@ -613,11 +565,6 @@ class ChatQueries:
         skill: Optional[str] = None,
         days: Optional[int] = None,
     ) -> SalaryStats:
-        """중앙값·사분위 + 공개율.
-
-        ★ 공개율의 분모는 집계 대상이 아니라 필터를 통과한 **전체 공고수** 다.
-          집계 대상을 분모로 쓰면 공개율이 항상 1.0 이 된다.
-        """
         filters = self._posting_filters(
             field=field, size_type=size_type, career_level=career_level, days=days
         )
@@ -637,8 +584,7 @@ class ChatQueries:
                     )
                 )
 
-        # ★ max_only 는 집계에서 뺀다. salary_min 이 없어 대푯값을 정할 수 없고,
-        #   salary_max 로 세면 "이하" 를 상한값 그 자체로 취급해 통계가 위로 끌린다.
+        # max_only 는 대푯값을 정할 수 없어 집계에서 뺀다
         stat_types = (SalaryType.RANGE, SalaryType.MIN_ONLY)
         amount = func.coalesce(JobPosting.salary_min, JobPosting.salary_max)
         in_scope = and_(JobPosting.salary_type.in_(stat_types), amount.is_not(None))
@@ -660,7 +606,6 @@ class ChatQueries:
         ).one()
         total, sample, median, q1, q3, minimum, maximum = row
 
-        # breakdown 은 SalaryType 전체를 실어야 합계가 total 과 맞는다.
         breakdown = dict(
             (
                 await self.session.exec(
@@ -688,7 +633,6 @@ class ChatQueries:
             low_confidence=sample < _LOW_CONFIDENCE_SAMPLE,
         )
 
-    # ── 연관 기술 ──────────────────────────────────────────────────────────
     async def related_skills(
         self,
         skill_query: str,
@@ -697,11 +641,6 @@ class ChatQueries:
         top: int = 10,
         days: Optional[int] = None,
     ) -> Optional[RelatedSkills]:
-        """동시출현 + NPMI. 함께 요구되는 기술을 찾는다.
-
-        NPMI = ln(p(x,y) / (p(x)p(y))) / -ln(p(x,y))     범위 [-1, 1]
-        단순 동시출현수만 쓰면 흔한 스킬(Python·AWS)이 무조건 상위를 차지한다.
-        """
         found = await self.resolve_skill_name(skill_query)
         if found is None:
             return None
@@ -721,7 +660,6 @@ class ChatQueries:
         if not universe:
             return RelatedSkills(skill=skill_name, base_postings=0, items=[])
 
-        # 기준 스킬이 등장한 공고
         base_ids = (
             select(PostingSkill.posting_id)
             .where(PostingSkill.skill_id == skill_id, PostingSkill.requirement.in_(grades))
@@ -749,7 +687,6 @@ class ChatQueries:
         if not rows:
             return RelatedSkills(skill=skill_name, base_postings=base_count, items=[])
 
-        # 상대 스킬의 전체 등장 횟수 (NPMI 의 p(y))
         totals = dict(
             (
                 await self.session.exec(
@@ -785,7 +722,6 @@ class ChatQueries:
             ],
         )
 
-    # ── 기업 ───────────────────────────────────────────────────────────────
     async def _company_top_skills(
         self, company_id: int, grades: tuple[Requirement, ...], top: int
     ) -> tuple[list[SkillCount], int]:
@@ -821,11 +757,6 @@ class ChatQueries:
         return skills, postings
 
     async def company_profile(self, name: str, top: int = 10) -> CompanyLookup:
-        """기업 프로필. 동명·유사명이 여럿이면 후보 목록을 돌려준다.
-
-        요구 스택은 body 를 포함한 전 등급을 본다 — "우리는 AWS 위에서 운영합니다"
-        는 요구사항은 아니지만 그 회사의 기술 정보로는 유효하다.
-        """
         needle = name.strip()
         if not needle:
             return CompanyLookup(status="not_found")
@@ -875,8 +806,7 @@ class ChatQueries:
             )
         ).one()
 
-        # ★ 같은 식 객체를 SELECT · GROUP BY 에 함께 넘겨야 한다. 따로 만들면
-        #   SQLAlchemy 가 다른 식으로 보고 GroupingError 가 난다.
+        # 같은 식 객체를 SELECT 와 GROUP BY 에 넘겨야 GroupingError 가 안 난다
         region = func.split_part(JobPosting.location, " ", 1)
         locations = dict(
             (
@@ -911,7 +841,6 @@ class ChatQueries:
     async def compare_companies(
         self, company_ids: Sequence[int], top: int = 10
     ) -> CompanyComparisons:
-        """기업 2~5개의 요구 스택을 나란히 놓고 공통 스킬을 뽑는다."""
         if len(company_ids) < 2:
             raise ValueError("비교하려면 기업이 2개 이상이어야 합니다.")
 
@@ -926,7 +855,6 @@ class ChatQueries:
         results: list[CompanyComparison] = []
         skill_sets: list[set[str]] = []
         for company_id, name, size_type in companies:
-            # 기업 비교는 필수 요구만 본다. 우대사항까지 넣으면 차이가 흐려진다.
             skills, postings = await self._company_top_skills(company_id, _STRICT, top)
             results.append(
                 CompanyComparison(
@@ -942,7 +870,6 @@ class ChatQueries:
         shared = sorted(set.intersection(*skill_sets)) if skill_sets else []
         return CompanyComparisons(companies=results, shared_skills=shared)
 
-    # ── 유사 기업 ──────────────────────────────────────────────────────────
     async def similar_companies(
         self, company_id: int, top: int = 5
     ) -> Optional[SimilarCompanies]:
@@ -1000,7 +927,6 @@ class ChatQueries:
         for other_id, other_name, other_size, other_employees in meta:
             stack, shared = stacks.get(other_id, (0.0 if target_has_stack else None, []))
             percentile = percentiles.get(other_id)
-            # 소개글 없는 후보는 중립값. 기준 기업에 소개글이 없으면 설명 항목 자체를 뺀다.
             description_score = None
             if described:
                 description_score = similarity.NEUTRAL if percentile is None else percentile
@@ -1057,7 +983,6 @@ class ChatQueries:
     async def _stack_cosines(
         self, company_id: int
     ) -> tuple[bool, dict[int, tuple[float, list[str]]]]:
-        """기업별 요구 스킬 공고수 벡터의 코사인. 기준 기업과 스킬이 하나라도 겹치는 기업만."""
         counts = (
             select(
                 JobPosting.company_id.label("company_id"),
@@ -1113,7 +1038,6 @@ class ChatQueries:
             for other_id, dot, names in rows
         }
 
-    # ── 기업 검색 ──────────────────────────────────────────────────────────
     async def search_companies(
         self,
         query_vec: Sequence[float],
@@ -1127,7 +1051,6 @@ class ChatQueries:
         if size_type is not None:
             filters.append(Company.size_type == size_type)
         if field is not None:
-            # 그 분야 공고를 한 건이라도 낸 기업
             filters.append(
                 Company.id.in_(
                     select(JobPosting.company_id).where(
@@ -1182,7 +1105,6 @@ class ChatQueries:
             )
         ]
 
-    # ── 공고 검색 ──────────────────────────────────────────────────────────
     async def search_postings(
         self,
         query_vec: Sequence[float],
@@ -1192,8 +1114,6 @@ class ChatQueries:
         top: int = 10,
         active_only: bool = True,
     ) -> list[PostingHit]:
-        # 필터가 있으면 HNSW 가 ef_search(40)개만 보고 걸러 top 보다 적게 줄 수 있다.
-        # iterative_scan 은 모자라면 인덱스를 더 읽는다 (pgvector 0.8+).
         await self.session.exec(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
 
         filters = self._posting_filters(field=field, size_type=None, career_level=None, days=None)
@@ -1225,8 +1145,7 @@ class ChatQueries:
             )
         ).all()
 
-        # relaxed_order 는 순서가 약간 어긋날 수 있어 다시 정렬한다.
-        # 같은 공고를 여러 사이트가 올린 경우가 있어 (회사, 제목) 으로 걷어낸다.
+        # relaxed_order 는 순서가 어긋날 수 있어 다시 정렬한다
         best: dict[tuple[str | None, str], Any] = {}
         for row in sorted(rows, key=lambda r: r[6]):
             best.setdefault((row[2], row[1].strip()), row)
@@ -1243,7 +1162,6 @@ class ChatQueries:
             for posting_id, title, company, url, chunk_section, content, d in list(best.values())[:top]
         ]
 
-    # ── 갭 분석 ────────────────────────────────────────────────────────────
     async def skill_gap(
         self,
         my_skills: Sequence[str],
@@ -1253,13 +1171,6 @@ class ChatQueries:
         days: Optional[int] = 90,
         top: int = 15,
     ) -> SkillGap:
-        """내 스킬과 시장 요구의 차이.
-
-        ★ requirement 는 required + tag 만 본다. 우대사항까지 "부족" 으로 잡으면
-          목록이 무의미해진다 (실측: Kubernetes 는 preferred 가 required 보다 많다).
-        ★ "합격 확률" 은 지원 결과 데이터가 없어 계산하지 않는다. coverage 로
-          대체하고 "확률" 이라는 표현을 쓰지 않는다.
-        """
         matched: list[str] = []
         unknown: list[str] = []
         owned_ids: set[int] = set()

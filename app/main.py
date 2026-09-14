@@ -1,3 +1,5 @@
+# FastAPI 앱 진입점
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 

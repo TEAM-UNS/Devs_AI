@@ -1,4 +1,4 @@
-"""LLM · 임베딩 어댑터 예외."""
+# LLM 과 임베딩 어댑터 예외
 
 from app.core.exception.errors import AppException
 

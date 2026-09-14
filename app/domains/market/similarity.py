@@ -1,16 +1,4 @@
-"""유사 기업 점수.
-
-점수 = 0.5 × 스택 코사인 + 0.35 × 설명 백분위 + 0.15 × 규모 근접
-
-    스택 코사인   두 기업의 요구 스킬 벡터(스킬별 공고 수) 코사인
-    설명 백분위   profile_embedding 코사인을 후보 안에서의 백분위(0~1)로 바꾼 값.
-                  소개글이 없는 후보는 중립값 0.5
-    규모 근접     employee_count 로그 거리. 없으면 size_type 구간 거리. 그것도 없으면 재분배
-
-★ 설명 코사인은 0.38~0.56 좁은 띠에 몰려 있어, 원값을 섞거나 없는 쪽에 가중치를
-  재분배하면 소개글이 있는 기업이 오히려 불리해진다 (실측: 알피 top10 중 소개글 있는 기업 0곳).
-  업종명만으로 임베딩된 기업(71%)은 소개글 없음으로 친다.
-"""
+# 유사 기업 점수 계산
 
 import math
 from bisect import bisect_left
@@ -39,6 +27,7 @@ _SIZE_ORDER: dict[str, int] = {
 }
 
 
+# 설명 코사인은 좁은 띠에 몰려 있어 원값 대신 후보 안 백분위로 쓴다
 def percentile_ranks(values: Mapping[int, float]) -> dict[int, float]:
     ordered = sorted(values.values())
     span = max(len(ordered) - 1, 1)

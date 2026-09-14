@@ -1,3 +1,5 @@
+# DB 엔진과 세션
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import get_settings
 
-# 모델이 등록되는 메타데이터. alembic/env.py 의 target_metadata 가 이것을 본다.
+# alembic/env.py 가 target_metadata 로 쓴다
 metadata = SQLModel.metadata
 
 settings = get_settings()

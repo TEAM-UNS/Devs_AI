@@ -1,3 +1,5 @@
+# arq Redis 풀과 키 이름 규칙
+
 from datetime import datetime
 
 from arq import create_pool
@@ -41,7 +43,6 @@ async def ping() -> bool:
         return False
 
 
-# ── 키 규칙 ─────────────────────────────────────────────────────────────────
 def rate_limit_key(user_id: str, now: datetime) -> str:
     return f"rl:{user_id}:{now:%Y%m%d%H%M}"
 

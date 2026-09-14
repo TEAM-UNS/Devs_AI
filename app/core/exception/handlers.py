@@ -1,3 +1,5 @@
+# 전역 예외 핸들러
+
 import logging
 from http import HTTPStatus
 

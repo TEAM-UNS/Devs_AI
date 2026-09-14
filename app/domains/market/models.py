@@ -1,27 +1,6 @@
-"""market 스키마가 소유하는 테이블 (schema="market").
+# market 스키마 테이블 모델
 
-DDL 원본은 루트 init.sql. 이 파일은 그와 1:1로 대응해야 한다.
-(`alembic revision --autogenerate` 가 빈 마이그레이션을 뱉으면 일치한다)
-
-    tech_field       분야 분류
-    company          기업. name_key 로 사이트 간 통합. profile_embedding
-    company_source   사이트별 기업 식별자 (오병합 추적)
-    job_posting      공고. content_hash(변경감지) · embed_hash(재임베딩 판단)
-    posting_skill    공고 ↔ 스킬
-    posting_chunk    임베딩 단위
-    skill / skill_alias / skill_field
-    crawl_run        수집·임베딩 실행 이력
-
-규칙
-    - 이 모듈은 다른 도메인을 import 하지 않는다
-    - CHECK 제약 문자열은 enums.py + core.database.sql_in 으로 생성한다
-    - HNSW · 부분 · GIN 인덱스는 __table_args__ 에 명시한다
-    - updated_at 갱신은 DB 트리거(public.touch_updated_at)가 담당한다
-    - ★ `from __future__ import annotations` 를 쓰지 않는다.
-      모든 어노테이션이 문자열이 되면 SQLModel 이 Relationship 대상 클래스를
-      해석하지 못해 mapper 초기화에서 터진다 (SQLModel 의 알려진 제약).
-"""
-
+# from __future__ import annotations 를 쓰면 Relationship 해석이 깨진다
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
@@ -51,7 +30,7 @@ EMBED_DIM = get_settings().embed_dim
 
 _HNSW = {"m": 16, "ef_construction": 64}
 
-# ★ Enum 컬럼은 반드시 sa_type=String(n) 으로 고정한다.
+# Enum 컬럼은 sa_type=String(n) 으로 고정한다
 
 
 def _created_at() -> Column:
@@ -62,8 +41,6 @@ def _updated_at() -> Column:
     return Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class TechField(SQLModel, table=True):
     __tablename__ = "tech_field"
     __table_args__ = {"schema": SCHEMA}
@@ -77,8 +54,6 @@ class TechField(SQLModel, table=True):
     postings: list["JobPosting"] = Relationship(back_populates="field")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class Company(SQLModel, table=True):
     __tablename__ = "company"
     __table_args__ = (
@@ -168,8 +143,6 @@ class CompanySource(SQLModel, table=True):
     company: Company | None = Relationship(back_populates="sources")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class JobPosting(SQLModel, table=True):
     __tablename__ = "job_posting"
     __table_args__ = (
@@ -233,7 +206,6 @@ class JobPosting(SQLModel, table=True):
 
     title: str = Field(max_length=300)
 
-    # ── 정규화 전 원본 ──────────────────────────────────────────────────
     company_name_raw: str | None = Field(default=None, max_length=200)
     tags_raw: list[str] = Field(
         default_factory=list,
@@ -250,7 +222,7 @@ class JobPosting(SQLModel, table=True):
     welfare: str | None = Field(default=None, sa_type=Text)
 
     salary_raw: str | None = Field(default=None, sa_type=Text)
-    # ★ 항상 "연봉 만원" 단위다. 월급 표기는 ×12 해서 저장한다.
+    # 항상 연봉 만원 단위. 월급은 12를 곱해 저장한다
     salary_min: int | None = None
     salary_max: int | None = None
     salary_type: enums.SalaryType = Field(
@@ -284,8 +256,6 @@ class JobPosting(SQLModel, table=True):
     chunks: list["PostingChunk"] = Relationship(back_populates="posting", cascade_delete=True)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class Skill(SQLModel, table=True):
     __tablename__ = "skill"
     __table_args__ = {"schema": SCHEMA}
@@ -354,8 +324,6 @@ class PostingSkill(SQLModel, table=True):
     posting: JobPosting | None = Relationship(back_populates="skills")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class PostingChunk(SQLModel, table=True):
     __tablename__ = "posting_chunk"
     __table_args__ = (
@@ -392,8 +360,6 @@ class PostingChunk(SQLModel, table=True):
     posting: JobPosting | None = Relationship(back_populates="chunks")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════
 class CrawlRun(SQLModel, table=True):
     __tablename__ = "crawl_run"
     __table_args__ = (

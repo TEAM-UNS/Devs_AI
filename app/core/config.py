@@ -1,3 +1,5 @@
+# 환경변수 설정
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -14,20 +16,17 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # ── db ──
     database_url: str
     db_echo: bool = False
     db_pool_size: int = 10
     db_max_overflow: int = 5
 
-    # ── worker ──
     redis_url: str
     arq_max_jobs: int = 4
     arq_job_timeout: int = 600
 
     cors_origins: str = ""
 
-    # ── llm · embedding ──
     google_api_key: str = ""
     embed_provider: Literal["auto", "gemini", "fake"] = "auto"
     gemini_embed_model: str = "gemini-embedding-2"
@@ -40,7 +39,6 @@ class Settings(BaseSettings):
     embed_rpm: int = 0
     embed_tpm: int = 0
 
-    # ── crawler ──
     crawl_delay_seconds: float = 1.0
     crawl_max_delay_seconds: float = 20.0
     crawl_delay_factor: float = 1.6

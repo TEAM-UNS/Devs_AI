@@ -1,3 +1,4 @@
+# 앱 공통 예외 기반 클래스
 
 class AppException(Exception):
     def __init__(

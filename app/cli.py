@@ -1,17 +1,4 @@
-"""크롤러 · 임베딩 CLI.
-
-    python -m app.cli inspect --site jumpit [--page 1] [--limit 2]
-    python -m app.cli crawl   --site jumpit --pages 2 [--no-detail]
-                              [--skip-seen-days 7] [--force-reextract]
-    python -m app.cli embed   [--limit 500] [--fake] [--companies]
-    python -m app.cli vector-index --build | --drop
-
-inspect 는 DB 를 건드리지 않는다. 실제 응답을 data/raw/ 에 저장하고
-파서가 뽑아낸 값을 사람이 눈으로 확인하는 용도다.
-
-embed 는 arq 없이 임베딩 파이프라인만 돌린다 (태스크와 같은 서비스 함수를
-부른다). 워커를 띄우지 않고 결과를 확인할 때 쓴다.
-"""
+# 크롤링과 임베딩 CLI
 
 import argparse
 import asyncio
@@ -66,7 +53,6 @@ def _preview(value: object, width: int = 90) -> str:
     return text[:width] + ("…" if len(text) > width else "")
 
 
-# ── inspect ─────────────────────────────────────────────────────────────────
 async def cmd_inspect(args: argparse.Namespace) -> int:
     async with _build_crawler(args.site, getattr(args, "keyword", None)) as crawler:
         jobs, total = await crawler.fetch_list_page(args.page)
@@ -117,7 +103,6 @@ async def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── crawl ───────────────────────────────────────────────────────────────────
 async def cmd_crawl(args: argparse.Namespace) -> int:
     started = time.monotonic()
     keyword = getattr(args, "keyword", None)
@@ -147,7 +132,6 @@ async def cmd_crawl(args: argparse.Namespace) -> int:
     return 0 if stats.fetched else 1
 
 
-# ── embed ───────────────────────────────────────────────────────────────────
 async def cmd_embed(args: argparse.Namespace) -> int:
     embedder = build_embedder(force_fake=args.fake)
     factory = session_factory
@@ -184,7 +168,6 @@ async def cmd_embed(args: argparse.Namespace) -> int:
     return 0 if stats.errors == 0 else 1
 
 
-# ── vector-index ────────────────────────────────────────────────────────────
 async def cmd_vector_index(args: argparse.Namespace) -> int:
     action = "DROP" if args.drop else "BUILD"
     print(f"\n=== HNSW 인덱스 {action} ===")
@@ -216,7 +199,6 @@ async def cmd_vector_index(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── reparse ─────────────────────────────────────────────────────────────────
 async def cmd_reparse(args: argparse.Namespace) -> int:
     if args.from_snapshots:
         if not args.site:
@@ -247,7 +229,6 @@ async def cmd_reparse(args: argparse.Namespace) -> int:
     return 0 if stats.errors == 0 else 1
 
 
-# ── skills report ───────────────────────────────────────────────────────────
 async def cmd_skills_report(args: argparse.Namespace) -> int:
     async with get_worker_session() as session:
         unmatched, total, matched = await repository.count_unmatched_tags(session, source=args.site)
@@ -269,9 +250,6 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
         for item in unmatched[: args.top]:
             print(f"  {item.tag:<{width}}  {item.count}")
 
-    # ★ 태그만 보면 최근 기술을 놓친다. 사이트 태그 목록에 아직 없고 본문에만
-    #   적히기 때문이다. 실제로 RAG·pgvector 같은 벡터 스택이 통째로 빠져
-    #   있었는데 태그 리포트에는 한 건도 안 떴다.
     async with get_worker_session() as session:
         body_terms = await repository.count_unmatched_body_terms(
             session, source=args.site, min_count=args.min_count, limit=args.top
@@ -292,7 +270,6 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── entry ───────────────────────────────────────────────────────────────────
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli", description="채용 공고 크롤러")
     parser.add_argument("-v", "--verbose", action="store_true", help="디버그 로그")

@@ -1,8 +1,4 @@
-"""market 테이블의 값 어휘. init.sql 의 CHECK 제약과 반드시 일치한다.
-
-models.py 가 `sql_in()` 으로 CHECK 문자열을 여기서 생성하므로,
-Enum 을 고치면 DDL 도 같이 따라온다.
-"""
+# market 도메인 Enum 과 상수
 
 from enum import StrEnum
 

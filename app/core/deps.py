@@ -1,3 +1,5 @@
+# 공용 FastAPI 의존성
+
 from typing import Annotated
 
 from arq.connections import ArqRedis
