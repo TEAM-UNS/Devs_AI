@@ -1,4 +1,4 @@
-"""chat 테이블의 값 어휘."""
+# chat enum
 
 from enum import StrEnum
 

@@ -1,3 +1,5 @@
+# 리포트 테이블
+
 from typing import Optional
 
 from sqlmodel import SQLModel, Field

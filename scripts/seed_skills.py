@@ -1,11 +1,4 @@
-"""스킬 사전을 DB 에 심는다.
-
-    python -m scripts.seed_skills          적재
-    python -m scripts.seed_skills --check  중복 검사만 (DB 접속 없음)
-
-멱등하다. 여러 번 돌려도 결과가 같다.
-카탈로그 원본은 app/domains/crawler/seed_data.py 다.
-"""
+# 스킬 사전 DB 적재
 
 from __future__ import annotations
 
@@ -20,17 +13,9 @@ from app.domains.market import repository
 
 
 def find_alias_collisions() -> dict[str, list[str]]:
-    """두 스킬이 같은 별칭을 주장하면 찾아낸다.
-
-    skill_alias.alias 는 전역 UNIQUE 라 그냥 넣으면 뒤에 온 쪽이 조용히
-    버려진다. 사전이 조용히 망가지는 걸 막으려고 미리 검사한다.
-    """
-    # 같은 스킬이 "Qt"/"QT" 처럼 대소문자만 다른 표기를 둘 다 갖는 건 충돌이 아니다.
-    # 소유자를 집합으로 세서 자기 자신과의 충돌을 걸러낸다.
     owners: dict[str, set[str]] = defaultdict(set)
     for skill in SKILL_CATALOG:
-        # 대소문자 구분 별칭도 소문자로 비교한다. "C" 와 "c" 가 서로 다른
-        # 스킬에 붙으면 사람이 읽기에 사전이 깨진 것이다.
+        # 대소문자 구분 별칭도 소문자로 비교한다. 다른 스킬의 "C" 와 "c" 도 충돌이다
         for alias in (*skill.all_aliases(), *(a.lower() for a in skill.all_cs_aliases())):
             owners[alias].add(skill.name)
     return {alias: sorted(names) for alias, names in owners.items() if len(names) > 1}
@@ -63,20 +48,12 @@ def check() -> int:
 
 
 async def prune() -> int:
-    """카탈로그에 없는 스킬을 지운다.
-
-    이전 버전은 사이트 태그를 그대로 skill 로 만들었다("AI/인공지능" 같은 것도).
-    그런 행은 category 가 비어 있다 — 카탈로그를 거친 스킬은 항상 category 가
-    있으므로 이것으로 구분한다.
-    posting_skill 은 FK CASCADE 라 링크도 함께 정리된다. 이후 reparse 로
-    사전 기준 링크를 다시 만든다.
-    """
     from sqlalchemy import delete, select
 
     from app.domains.market.models import Skill
 
     async with get_worker_session() as session:
-        # sqlalchemy 의 select 는 Row 를 돌려준다 (sqlmodel.select 와 다르다)
+        # 카탈로그를 거친 스킬은 항상 category 가 있다. 비어 있으면 옛 사이트 태그 스킬이다
         rows = (await session.exec(select(Skill.name).where(Skill.category.is_(None)))).all()
         names = sorted(row[0] for row in rows)
         if not names:
@@ -109,8 +86,7 @@ async def seed() -> int:
                 is_ambiguous=skill.is_ambiguous,
                 is_common=skill.is_common,
             )
-            # 정규 표기는 매처가 자동으로 붙이므로 별칭 테이블에는 넣지 않는다.
-            # 단 대소문자 구분 표기는 플래그를 실어야 하므로 반드시 넣는다.
+            # 정규 표기는 매처가 자동으로 붙이므로 별칭 테이블에 넣지 않는다
             aliases = [a for a in skill.all_aliases() if a != skill.name.lower()]
             alias_total += await repository.replace_skill_aliases(
                 session, skill_id, aliases, skill.all_cs_aliases()

@@ -1,19 +1,6 @@
-"""chat 스키마가 소유하는 테이블 (schema="chat").
+# chat 스키마 테이블
 
-    chat_session    id(uuid) · user_id(토큰 sub) · title · message_count
-                    last_message_at · deleted_at(soft delete)
-    chat_message    session_id · seq(세션 내 유일) · role · content · token_count
-    chat_tool_call  message_id · tool_name · arguments · result
-                    chart_payload(그래프 복원) · latency_ms · is_error
-
-chat_message 는 "표시용" 이력이다. LLM 컨텍스트는 LangGraph checkpointer 가
-따로 관리하며, checkpointer 테이블은 라이브러리가 chat 스키마에 직접 만든다
-(여기서 정의하지 않고 alembic 관리 대상도 아니다).
-
-★ `from __future__ import annotations` 를 쓰지 않는다. 어노테이션이 문자열이
-  되면 SQLModel 이 Relationship 대상을 해석하지 못한다.
-"""
-
+# from __future__ import annotations 를 넣으면 SQLModel 이 Relationship 대상을 못 푼다
 import uuid
 from datetime import datetime
 from typing import Any
