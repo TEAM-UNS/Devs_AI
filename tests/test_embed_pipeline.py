@@ -11,7 +11,8 @@ from sqlalchemy import text
 
 from app.core.database import get_worker_session
 from app.domains.crawler import embed_service
-from app.domains.market import repository
+from app.domains.crawler import repository
+from typing import Optional
 
 BODY_V1 = """[주요업무]
 - 결제 서버 API 개발 및 운영
@@ -62,7 +63,7 @@ async def postings(db) -> AsyncIterator[_Fixture]:
             )
 
 
-async def _insert(fixture: _Fixture, *, body: str | None, **overrides) -> int:
+async def _insert(fixture: _Fixture, *, body: Optional[str], **overrides) -> int:
     values = {
         "source": "saramin",
         "source_job_id": f"test-{fixture.tag}-{len(fixture.ids)}",
@@ -92,7 +93,7 @@ async def _chunks(posting_id: int) -> list[tuple[str, int, str]]:
     return [(s, q, h) for s, q, h in rows]
 
 
-async def _embed_hash(posting_id: int) -> str | None:
+async def _embed_hash(posting_id: int) -> Optional[str]:
     async with get_worker_session() as session:
         row = (
             await session.exec(

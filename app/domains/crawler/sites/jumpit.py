@@ -2,24 +2,15 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Optional, Any
 
 from app.domains.crawler.schemas import RawJob
 from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseError
 
 log = logging.getLogger(__name__)
 
-API_BASE = "https://jumpit-api.saramin.co.kr"
-LIST_URL = f"{API_BASE}/api/positions"
-DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
-WEB_BASE = "https://jumpit.saramin.co.kr"
 
-PAGE_SIZE = 16
-
-KST = timezone(timedelta(hours=9))
-
-
-def _parse_dt(value: Any) -> datetime | None:
+def _parse_dt(value: Any) -> Optional[datetime]:
     if not value or not isinstance(value, str):
         return None
     try:
@@ -27,7 +18,7 @@ def _parse_dt(value: Any) -> datetime | None:
     except ValueError:
         log.debug("날짜 파싱 실패: %r", value)
         return None
-    return dt.replace(tzinfo=KST) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=timezone(timedelta(hours=9))) if dt.tzinfo is None else dt
 
 
 def _split_categories(value: Any) -> list[str]:
@@ -38,11 +29,18 @@ def _split_categories(value: Any) -> list[str]:
 
 class JumpitCrawler(BaseSiteCrawler):
     source = "jumpit"
+
+    API_BASE = "https://jumpit-api.saramin.co.kr"
+    LIST_URL = f"{API_BASE}/api/positions"
+    DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
+    WEB_BASE = "https://jumpit.saramin.co.kr"
+    PAGE_SIZE = 16
+
     referer = f"{WEB_BASE}/positions"
 
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         payload = await self.get_json(
-            LIST_URL,
+            self.LIST_URL,
             params={"sort": "popular", "highlight": "false", "page": page},
             snapshot=f"list_p{page}",
         )
@@ -73,7 +71,7 @@ class JumpitCrawler(BaseSiteCrawler):
         return RawJob(
             source=self.source,
             source_job_id=str(job_id),
-            url=f"{WEB_BASE}/position/{job_id}",
+            url=f"{self.WEB_BASE}/position/{job_id}",
             title=item.get("title") or "",
             company_name=item.get("companyName") or "",
             tech_stacks=[s for s in stacks if isinstance(s, str)],
@@ -89,7 +87,7 @@ class JumpitCrawler(BaseSiteCrawler):
     async def fetch_detail(self, job: RawJob) -> RawJob:
         try:
             payload = await self.get_json(
-                DETAIL_URL.format(id=job.source_job_id),
+                self.DETAIL_URL.format(id=job.source_job_id),
                 snapshot=f"position_{job.source_job_id}",
             )
         except CrawlError as exc:

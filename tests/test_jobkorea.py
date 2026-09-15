@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from app.domains.crawler.extractor import parse_salary
 from app.domains.crawler.sites import htmlutil as hu
 from app.domains.crawler.sites.jobkorea import JobkoreaCrawler, salary_text_from_jsonld
-from app.domains.market.enums import SalaryPeriod, SalaryType
+from app.domains.crawler.enums import SalaryPeriod, SalaryType
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

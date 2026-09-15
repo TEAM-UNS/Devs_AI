@@ -6,9 +6,10 @@ import re
 from pathlib import Path
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.sql import functions
 
-from app.domains.market import repository
-from app.domains.market.models import JobPosting
+from app.domains.crawler import repository
+from app.domains.crawler.models import JobPosting
 
 SERVICE = Path(repository.__file__).parent.parent / "crawler" / "service.py"
 
@@ -24,11 +25,14 @@ def _columns_service_inserts() -> set[str]:
     return names & {c.name for c in JobPosting.__table__.columns}
 
 
-def _columns_on_conflict_updates() -> set[str]:
+def _conflict_set() -> dict[str, object]:
     values = {c.name: None for c in JobPosting.__table__.columns if c.name != "id"}
     stmt = pg_insert(JobPosting).values(**values)
-    set_ = dict(repository._conflict_update_set(stmt.excluded))
-    return set(set_)
+    return dict(repository._conflict_update_set(stmt.excluded))
+
+
+def _columns_on_conflict_updates() -> set[str]:
+    return set(_conflict_set())
 
 
 def test_every_inserted_column_is_updated_on_conflict() -> None:
@@ -39,7 +43,7 @@ def test_every_inserted_column_is_updated_on_conflict() -> None:
     assert not missing, (
         f"ON CONFLICT 에서 빠진 컬럼: {missing}. "
         "기존 행이 영원히 갱신되지 않는다. "
-        "_COALESCE_ON_UPDATE 나 upsert_posting 의 set_ 에 추가하라."
+        "repository._conflict_update_set 에 추가하라."
     )
 
 
@@ -56,5 +60,6 @@ def test_embed_hash_is_never_touched_by_the_crawler() -> None:
 
 def test_parse_verdicts_overwrite_rather_than_coalesce() -> None:
     # COALESCE 로 두면 한 번 true 가 된 값이 파서를 고친 뒤에도 남는다
+    set_ = _conflict_set()
     for column in ("body_is_image", "body_extract_failed"):
-        assert column not in repository._COALESCE_ON_UPDATE
+        assert not isinstance(set_[column], functions.coalesce)

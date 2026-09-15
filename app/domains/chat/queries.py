@@ -1,6 +1,7 @@
 # 챗봇 툴이 쓰는 읽기 전용 쿼리
 
 import math
+from bisect import bisect_left
 from datetime import UTC, datetime, timedelta
 from collections.abc import Sequence
 from typing import Any, Optional
@@ -15,8 +16,7 @@ from sqlmodel import (
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.domains.market import similarity
-from app.domains.market.enums import (
+from app.domains.crawler.enums import (
     CareerLevel,
     ChunkSection,
     CompanySize,
@@ -25,8 +25,8 @@ from app.domains.market.enums import (
     SalaryType,
 )
 
-from app.domains.market.enums import TechField as TechFieldCode
-from app.domains.market.models import (
+from app.domains.crawler.enums import TechField as TechFieldCode
+from app.domains.crawler.models import (
     Company,
     CrawlRun,
     JobPosting,
@@ -36,7 +36,7 @@ from app.domains.market.models import (
     TechField,
     SkillAlias,
 )
-from app.domains.market.schemas import (
+from app.domains.chat.schemas import (
     CompanyCandidate,
     CompanyComparison,
     CompanyComparisons,
@@ -63,40 +63,25 @@ from app.domains.market.schemas import (
 )
 
 
-APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
-
-_DISCLOSED = (SalaryType.RANGE, SalaryType.MIN_ONLY, SalaryType.MAX_ONLY)
-
-_DEMAND = (Requirement.TAG, Requirement.REQUIRED, Requirement.PREFERRED)
-
-_STRICT = (Requirement.TAG, Requirement.REQUIRED)
-
-# K 없이 나누면 지난 구간 0건인 스킬이 무한대 증가율이 된다
-_RISING_SMOOTHING = 1
-_RISING_WINDOW_DAYS = 7
-_RISING_MIN_COUNT = 5
-
-_NPMI_MIN_COOCCURRENCE = 3
-
-_SEARCH_CHUNKS_PER_POSTING = 4
-
-_EVIDENCE_CHARS = 200
-
-_SHARED_SKILLS = 5
-
-_LOW_CONFIDENCE_SAMPLE = 10
-
-_SALARY_UNIT = "만원"
-
-_CAREER_RANGES: dict[CareerLevel, tuple[int, Optional[int]]] = {
-    CareerLevel.NEWCOMER: (0, 0),
-    CareerLevel.JUNIOR: (1, 3),
-    CareerLevel.MID: (4, 7),
-    CareerLevel.SENIOR: (8, None),
-}
-
-
 class ChatQueries:
+    APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
+
+    _DEMAND = (Requirement.TAG, Requirement.REQUIRED, Requirement.PREFERRED)
+
+    _STRICT = (Requirement.TAG, Requirement.REQUIRED)
+
+    # K 없이 나누면 지난 구간 0건인 스킬이 무한대 증가율이 된다
+    _RISING_SMOOTHING = 1
+
+    _LOW_CONFIDENCE_SAMPLE = 10
+
+    _CAREER_RANGES: dict[CareerLevel, tuple[int, Optional[int]]] = {
+        CareerLevel.NEWCOMER: (0, 0),
+        CareerLevel.JUNIOR: (1, 3),
+        CareerLevel.MID: (4, 7),
+        CareerLevel.SENIOR: (8, None),
+    }
+
     def __init__(self, session: AsyncSession):
         self.session = session
 
@@ -111,7 +96,11 @@ class ChatQueries:
                         JobPosting.expires_at.is_(None) | (JobPosting.expires_at >= func.now())
                     ),
                     func.count(JobPosting.id).filter(JobPosting.body_is_image.is_(True)),
-                    func.count(JobPosting.id).filter(JobPosting.salary_type.in_(_DISCLOSED)),
+                    func.count(JobPosting.id).filter(
+                        JobPosting.salary_type.in_(
+                            (SalaryType.RANGE, SalaryType.MIN_ONLY, SalaryType.MAX_ONLY)
+                        )
+                    ),
                     func.count(JobPosting.id).filter(JobPosting.field_id.is_(None)),
                 )
             )
@@ -173,7 +162,7 @@ class ChatQueries:
         conditions: list[Any] = []
 
         if days is not None:
-            conditions.append(APPEARED_AT >= datetime.now(UTC) - timedelta(days=days))
+            conditions.append(ChatQueries.APPEARED_AT >= datetime.now(UTC) - timedelta(days=days))
 
         if field is not None:
             conditions.append(
@@ -187,7 +176,7 @@ class ChatQueries:
             )
 
         if career_level is not None:
-            low, high = _CAREER_RANGES[career_level]
+            low, high = ChatQueries._CAREER_RANGES[career_level]
             if high is not None:
                 conditions.append(func.coalesce(JobPosting.career_min, 0) <= high)
             conditions.append(JobPosting.career_max.is_(None) | (JobPosting.career_max >= low))
@@ -207,7 +196,7 @@ class ChatQueries:
             field=field, size_type=size_type, career_level=career_level, days=days
         )
 
-        skill_filters = [PostingSkill.requirement.in_(_DEMAND)]
+        skill_filters = [PostingSkill.requirement.in_(self._DEMAND)]
         if not include_common:
             skill_filters.append(Skill.is_common.is_(False))
 
@@ -297,7 +286,7 @@ class ChatQueries:
             return None
         skill_id, skill_name = found
 
-        base = [PostingSkill.skill_id == skill_id, PostingSkill.requirement.in_(_DEMAND)]
+        base = [PostingSkill.skill_id == skill_id, PostingSkill.requirement.in_(self._DEMAND)]
         postings = func.count(func.distinct(PostingSkill.posting_id))
 
         def scoped():
@@ -372,7 +361,7 @@ class ChatQueries:
     def _career_conditions() -> dict[str, Any]:
         conditions: dict[str, Any] = {}
         for level in CareerLevel:
-            low, high = _CAREER_RANGES[level]
+            low, high = ChatQueries._CAREER_RANGES[level]
             parts = [or_(JobPosting.career_max.is_(None), JobPosting.career_max >= low)]
             if high is not None:
                 parts.append(func.coalesce(JobPosting.career_min, 0) <= high)
@@ -382,8 +371,8 @@ class ChatQueries:
     async def rising_skills(
         self,
         field: Optional[TechFieldCode] = None,
-        window_days: int = _RISING_WINDOW_DAYS,
-        min_count: int = _RISING_MIN_COUNT,
+        window_days: int = 7,
+        min_count: int = 5,
         top: int = 10,
         include_common: bool = False,
     ) -> RisingSkills:
@@ -392,15 +381,15 @@ class ChatQueries:
         previous_from = now - timedelta(days=window_days * 2)
 
         base = self._posting_filters(field=field, size_type=None, career_level=None, days=None)
-        base.append(PostingSkill.requirement.in_(_DEMAND))
+        base.append(PostingSkill.requirement.in_(self._DEMAND))
         if not include_common:
             base.append(Skill.is_common.is_(False))
 
         recent = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            APPEARED_AT >= recent_from
+            self.APPEARED_AT >= recent_from
         )
         previous = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            and_(APPEARED_AT >= previous_from, APPEARED_AT < recent_from)
+            and_(self.APPEARED_AT >= previous_from, self.APPEARED_AT < recent_from)
         )
 
         rows = (
@@ -409,7 +398,7 @@ class ChatQueries:
                 .select_from(PostingSkill)
                 .join(Skill, Skill.id == PostingSkill.skill_id)
                 .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
-                .where(*base, APPEARED_AT >= previous_from)
+                .where(*base, self.APPEARED_AT >= previous_from)
                 .group_by(Skill.name)
                 .having(recent >= min_count)
             )
@@ -421,7 +410,9 @@ class ChatQueries:
                     name,
                     recent_count,
                     previous_count,
-                    (recent_count + _RISING_SMOOTHING) / (previous_count + _RISING_SMOOTHING) - 1,
+                    (recent_count + self._RISING_SMOOTHING)
+                    / (previous_count + self._RISING_SMOOTHING)
+                    - 1,
                 )
                 for name, recent_count, previous_count in rows
             ),
@@ -431,9 +422,9 @@ class ChatQueries:
         window_counts = (
             await self.session.exec(
                 select(
-                    func.count().filter(APPEARED_AT >= recent_from),
+                    func.count().filter(self.APPEARED_AT >= recent_from),
                     func.count().filter(
-                        and_(APPEARED_AT >= previous_from, APPEARED_AT < recent_from)
+                        and_(self.APPEARED_AT >= previous_from, self.APPEARED_AT < recent_from)
                     ),
                 )
                 .select_from(JobPosting)
@@ -460,7 +451,9 @@ class ChatQueries:
             window_days=window_days,
             recent_postings=recent_postings,
             previous_postings=previous_postings,
-            low_confidence=min(recent_postings, previous_postings) < _LOW_CONFIDENCE_SAMPLE * 10,
+            low_confidence=(
+                min(recent_postings, previous_postings) < self._LOW_CONFIDENCE_SAMPLE * 10
+            ),
         )
 
     async def stacks_by_segment(
@@ -477,7 +470,7 @@ class ChatQueries:
         base = self._posting_filters(
             field=field, size_type=None, career_level=None, days=days
         )
-        base.append(PostingSkill.requirement.in_(_DEMAND))
+        base.append(PostingSkill.requirement.in_(self._DEMAND))
         if not include_common:
             base.append(Skill.is_common.is_(False))
 
@@ -579,7 +572,7 @@ class ChatQueries:
                     JobPosting.id.in_(
                         select(PostingSkill.posting_id).where(
                             PostingSkill.skill_id == found[0],
-                            PostingSkill.requirement.in_(_DEMAND),
+                            PostingSkill.requirement.in_(self._DEMAND),
                         )
                     )
                 )
@@ -616,21 +609,21 @@ class ChatQueries:
             ).all()
         )
 
-        def to_int(value: Any) -> int | None:
+        def to_int(value: Any) -> Optional[int]:
             return int(value) if value is not None else None
 
         return SalaryStats(
             sample_size=sample,
             total_postings=total,
             disclosure_rate=round(sample / total, 4) if total else 0.0,
-            unit=_SALARY_UNIT,
+            unit="만원",
             median=to_int(median),
             q1=to_int(q1),
             q3=to_int(q3),
             minimum=to_int(minimum),
             maximum=to_int(maximum),
             breakdown={str(k): v for k, v in breakdown.items()},
-            low_confidence=sample < _LOW_CONFIDENCE_SAMPLE,
+            low_confidence=sample < self._LOW_CONFIDENCE_SAMPLE,
         )
 
     async def related_skills(
@@ -646,7 +639,7 @@ class ChatQueries:
             return None
         skill_id, skill_name = found
 
-        grades = (requirement,) if requirement is not None else _DEMAND
+        grades = (requirement,) if requirement is not None else self._DEMAND
         filters = self._posting_filters(
             field=field, size_type=None, career_level=None, days=days
         )
@@ -681,7 +674,7 @@ class ChatQueries:
                     PostingSkill.requirement.in_(grades),
                 )
                 .group_by(Skill.id, Skill.name)
-                .having(cooccurrence >= _NPMI_MIN_COOCCURRENCE)
+                .having(cooccurrence >= 3)
             )
         ).all()
         if not rows:
@@ -855,7 +848,7 @@ class ChatQueries:
         results: list[CompanyComparison] = []
         skill_sets: list[set[str]] = []
         for company_id, name, size_type in companies:
-            skills, postings = await self._company_top_skills(company_id, _STRICT, top)
+            skills, postings = await self._company_top_skills(company_id, self._STRICT, top)
             results.append(
                 CompanyComparison(
                     company_id=company_id,
@@ -922,16 +915,16 @@ class ChatQueries:
             )
         ).all()
 
-        percentiles = similarity.percentile_ranks(described)
+        percentiles = self._percentile_ranks(described)
         scored = []
         for other_id, other_name, other_size, other_employees in meta:
             stack, shared = stacks.get(other_id, (0.0 if target_has_stack else None, []))
             percentile = percentiles.get(other_id)
             description_score = None
             if described:
-                description_score = similarity.NEUTRAL if percentile is None else percentile
-            size = similarity.size_proximity(employees, size_type, other_employees, other_size)
-            score = similarity.combine(stack, description_score, size)
+                description_score = 0.5 if percentile is None else percentile
+            size = self._size_proximity(employees, size_type, other_employees, other_size)
+            score = self._combine(stack, description_score, size)
             scored.append(
                 (
                     score,
@@ -947,7 +940,7 @@ class ChatQueries:
             )
         scored.sort(key=lambda r: (-r[0], -(r[1] or 0), r[6]))
 
-        def rounded(value: float | None) -> float | None:
+        def rounded(value: Optional[float]) -> Optional[float]:
             return round(value, 4) if value is not None else None
 
         return SimilarCompanies(
@@ -980,6 +973,34 @@ class ChatQueries:
             ],
         )
 
+    @staticmethod
+    def _percentile_ranks(values: dict[int, float]) -> dict[int, float]:
+        # 설명 코사인은 좁은 띠에 몰려 있어 원값 대신 후보 안 백분위로 쓴다
+        ordered = sorted(values.values())
+        span = max(len(ordered) - 1, 1)
+        return {key: bisect_left(ordered, value) / span for key, value in values.items()}
+
+    @staticmethod
+    def _size_proximity(
+        a_employees: Optional[int],
+        a_size: Optional[str],
+        b_employees: Optional[int],
+        b_size: Optional[str],
+    ) -> Optional[float]:
+        if a_employees and b_employees:
+            # 직원 수 10배 차이면 0.67, 1000배면 0
+            return max(0.0, 1 - abs(math.log10(a_employees) - math.log10(b_employees)) / 3)
+        order = ["startup", "small", "medium", "large", "enterprise"]
+        if a_size not in order or b_size not in order:
+            return None
+        return 1 - abs(order.index(a_size) - order.index(b_size)) / 4
+
+    @staticmethod
+    def _combine(stack: Optional[float], description: Optional[float], size: Optional[float]) -> float:
+        parts = [(w, v) for w, v in ((0.5, stack), (0.35, description), (0.15, size)) if v is not None]
+        total = sum(w for w, _ in parts)
+        return sum(w * v for w, v in parts) / total if total else 0.0
+
     async def _stack_cosines(
         self, company_id: int
     ) -> tuple[bool, dict[int, tuple[float, list[str]]]]:
@@ -994,7 +1015,7 @@ class ChatQueries:
             .join(Skill, Skill.id == PostingSkill.skill_id)
             .where(
                 JobPosting.company_id.is_not(None),
-                PostingSkill.requirement.in_(_DEMAND),
+                PostingSkill.requirement.in_(self._DEMAND),
                 Skill.is_common.is_(False),
             )
             .group_by(JobPosting.company_id, PostingSkill.skill_id)
@@ -1034,7 +1055,7 @@ class ChatQueries:
             )
         ).all()
         return True, {
-            other_id: (float(dot) / float(target_norm), list(names[:_SHARED_SKILLS]))
+            other_id: (float(dot) / float(target_norm), list(names[:5]))
             for other_id, dot, names in rows
         }
 
@@ -1070,7 +1091,7 @@ class ChatQueries:
         )
         evidence = func.left(
             func.coalesce(Company.description, Company.business_content, Company.industry),
-            _EVIDENCE_CHARS,
+            200,
         )
         distance = Company.profile_embedding.cosine_distance(list(query_vec))
         rows = (
@@ -1141,12 +1162,12 @@ class ChatQueries:
                 .outerjoin(Company, Company.id == JobPosting.company_id)
                 .where(*filters)
                 .order_by(distance)
-                .limit(top * _SEARCH_CHUNKS_PER_POSTING)
+                .limit(top * 4)
             )
         ).all()
 
         # relaxed_order 는 순서가 어긋날 수 있어 다시 정렬한다
-        best: dict[tuple[str | None, str], Any] = {}
+        best: dict[tuple[Optional[str], str], Any] = {}
         for row in sorted(rows, key=lambda r: r[6]):
             best.setdefault((row[2], row[1].strip()), row)
         return [
@@ -1187,7 +1208,7 @@ class ChatQueries:
         )
         if company_ids:
             filters.append(JobPosting.company_id.in_(list(company_ids)))
-        filters.append(PostingSkill.requirement.in_(_STRICT))
+        filters.append(PostingSkill.requirement.in_(self._STRICT))
         filters.append(Skill.is_common.is_(False))
 
         analyzed = (

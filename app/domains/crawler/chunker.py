@@ -5,20 +5,8 @@ import re
 from dataclasses import dataclass
 
 from app.domains.crawler.extractor import Section, split_sections
-from app.domains.market.enums import ChunkSection
-
-CHUNK_MAX_CHARS = 1200
-CHUNK_MIN_CHARS = 40
-
-_SECTION_MAP: dict[Section, ChunkSection] = {
-    Section.RESPONSIBILITY: ChunkSection.RESPONSIBILITY,
-    Section.REQUIRED: ChunkSection.REQUIRED,
-    Section.PREFERRED: ChunkSection.PREFERRED,
-    Section.BODY: ChunkSection.RESPONSIBILITY,
-}
-
-_WS = re.compile(r"\s+")
-_BULLET_ONLY = re.compile(r"^[\s\-•·*▪◦]+$")
+from app.domains.crawler.enums import ChunkSection
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -31,7 +19,7 @@ class Chunk:
 
 
 def normalize(text: str) -> str:
-    return _WS.sub(" ", text).strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def hash_chunk(section: ChunkSection, content: str) -> str:
@@ -42,14 +30,20 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(normalize(text)))
 
 
-def build_chunks(description: str | None) -> list[Chunk]:
+def build_chunks(description: Optional[str]) -> list[Chunk]:
     if not description or not description.strip():
         return []
 
+    section_map: dict[Section, ChunkSection] = {
+        Section.RESPONSIBILITY: ChunkSection.RESPONSIBILITY,
+        Section.REQUIRED: ChunkSection.REQUIRED,
+        Section.PREFERRED: ChunkSection.PREFERRED,
+        Section.BODY: ChunkSection.RESPONSIBILITY,
+    }
     merged: dict[ChunkSection, list[str]] = {}
     order: list[ChunkSection] = []
     for raw_section, body in split_sections(description):
-        target = _SECTION_MAP.get(raw_section)
+        target = section_map.get(raw_section)
         if target is None:
             continue
         text = body.strip()
@@ -77,7 +71,8 @@ def build_chunks(description: str | None) -> list[Chunk]:
 
 
 def _split_long(text: str) -> list[str]:
-    if len(text) <= CHUNK_MAX_CHARS:
+    max_chars = 1200
+    if len(text) <= max_chars:
         return [text]
 
     pieces: list[str] = []
@@ -93,22 +88,22 @@ def _split_long(text: str) -> list[str]:
         size = 0
 
     for raw_line in text.splitlines():
-        if _BULLET_ONLY.match(raw_line):
+        if re.match(r"^[\s\-•·*▪◦]+$", raw_line):
             continue
         line = raw_line
-        while len(line) > CHUNK_MAX_CHARS:
+        while len(line) > max_chars:
             flush()
-            pieces.append(line[:CHUNK_MAX_CHARS])
-            line = line[CHUNK_MAX_CHARS:]
+            pieces.append(line[:max_chars])
+            line = line[max_chars:]
 
-        if size + len(line) + 1 > CHUNK_MAX_CHARS and current:
+        if size + len(line) + 1 > max_chars and current:
             flush()
         current.append(line)
         size += len(line) + 1
 
     flush()
 
-    if len(pieces) > 1 and len(pieces[-1]) < CHUNK_MIN_CHARS:
+    if len(pieces) > 1 and len(pieces[-1]) < 40:
         tail = pieces.pop()
         pieces[-1] = f"{pieces[-1]}\n{tail}"
     return pieces

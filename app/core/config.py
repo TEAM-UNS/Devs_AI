@@ -7,12 +7,11 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-BASE_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=Path(__file__).resolve().parents[2] / ".env",
         extra="ignore"
     )
 
@@ -29,7 +28,10 @@ class Settings(BaseSettings):
 
     google_api_key: str = ""
     embed_provider: Literal["auto", "gemini", "fake"] = "auto"
-    gemini_embed_model: str = "gemini-embedding-2"
+    gemini_embed_model: str
+
+    gemini_model: str
+    llm_max_retry: int = 3
 
     embed_dim: int = 1024
     embed_batch_size: int = 96
@@ -43,6 +45,7 @@ class Settings(BaseSettings):
     crawl_max_delay_seconds: float = 20.0
     crawl_delay_factor: float = 1.6
     crawl_max_retry: int = 3
+    crawl_skip_seen_days: int = 7
     crawl_user_agent: str = "jobstack-bot/0.1"
 
 

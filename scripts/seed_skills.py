@@ -8,13 +8,13 @@ import sys
 from collections import defaultdict
 
 from app.core.database import close_engine, get_worker_session
-from app.domains.crawler.seed_data import FIELD_CATALOG, SKILL_CATALOG, catalog_stats
-from app.domains.market import repository
+from app.domains.crawler.seed_data import catalog_stats, field_catalog, skill_catalog
+from app.domains.crawler import repository
 
 
 def find_alias_collisions() -> dict[str, list[str]]:
     owners: dict[str, set[str]] = defaultdict(set)
-    for skill in SKILL_CATALOG:
+    for skill in skill_catalog():
         # 대소문자 구분 별칭도 소문자로 비교한다. 다른 스킬의 "C" 와 "c" 도 충돌이다
         for alias in (*skill.all_aliases(), *(a.lower() for a in skill.all_cs_aliases())):
             owners[alias].add(skill.name)
@@ -25,18 +25,18 @@ def check() -> int:
     collisions = find_alias_collisions()
     stats = catalog_stats()
 
-    print(f"스킬 {len(SKILL_CATALOG)}개 · 분야 {len(FIELD_CATALOG)}개")
+    print(f"스킬 {len(skill_catalog())}개 · 분야 {len(field_catalog())}개")
     for code, count in stats.items():
         flag = "" if count >= 12 else "  ← 12개 미만"
         print(f"  {code:<10} {count:>3}{flag}")
 
-    ambiguous = [s.name for s in SKILL_CATALOG if s.is_ambiguous]
-    common = [s.name for s in SKILL_CATALOG if s.is_common]
-    cs = [f"{s.name}({'/'.join(s.all_cs_aliases())})" for s in SKILL_CATALOG if s.cs_aliases]
+    ambiguous = [s.name for s in skill_catalog() if s.is_ambiguous]
+    common = [s.name for s in skill_catalog() if s.is_common]
+    cs = [f"{s.name}({'/'.join(s.all_cs_aliases())})" for s in skill_catalog() if s.cs_aliases]
     print(f"모호 스킬     : {', '.join(ambiguous)}")
     print(f"공통 도구     : {', '.join(common)}")
     print(f"대소문자 구분 : {', '.join(cs)}")
-    print(f"별칭 총 {sum(len(s.all_aliases()) + len(s.all_cs_aliases()) for s in SKILL_CATALOG)}개")
+    print(f"별칭 총 {sum(len(s.all_aliases()) + len(s.all_cs_aliases()) for s in skill_catalog())}개")
 
     if collisions:
         print("\n!! 별칭 충돌 — 한 별칭을 여러 스킬이 주장합니다:")
@@ -50,7 +50,7 @@ def check() -> int:
 async def prune() -> int:
     from sqlalchemy import delete, select
 
-    from app.domains.market.models import Skill
+    from app.domains.crawler.models import Skill
 
     async with get_worker_session() as session:
         # 카탈로그를 거친 스킬은 항상 category 가 있다. 비어 있으면 옛 사이트 태그 스킬이다
@@ -74,11 +74,11 @@ async def seed() -> int:
 
     async with get_worker_session() as session:
         field_ids = await repository.upsert_tech_fields(
-            session, [(f.code, f.name, f.sort_order) for f in FIELD_CATALOG]
+            session, [(f.code, f.name, f.sort_order) for f in field_catalog()]
         )
 
         alias_total = 0
-        for skill in SKILL_CATALOG:
+        for skill in skill_catalog():
             skill_id = await repository.upsert_skill(
                 session,
                 name=skill.name,
@@ -98,7 +98,7 @@ async def seed() -> int:
             )
 
     print(
-        f"\n적재 완료: 분야 {len(field_ids)}개 · 스킬 {len(SKILL_CATALOG)}개 · 별칭 {alias_total}개"
+        f"\n적재 완료: 분야 {len(field_ids)}개 · 스킬 {len(skill_catalog())}개 · 별칭 {alias_total}개"
     )
     await close_engine()
     return 0

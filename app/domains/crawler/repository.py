@@ -3,14 +3,14 @@
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Optional, Any
 
 from sqlalchemy import and_, delete, func, or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.domains.market import enums
-from app.domains.market.models import (
+from app.domains.crawler import enums
+from app.domains.crawler.models import (
     Company,
     CompanySource,
     CrawlRun,
@@ -22,24 +22,7 @@ from app.domains.market.models import (
     SkillField,
     TechField,
 )
-from app.domains.market.schemas import SkillDictionaryRow, UnmatchedTag
-
-# None 이 와도 기존 값을 지우지 않는 컬럼. 새 컬럼은 여기나 _conflict_update_set 에 꼭 넣는다
-_COALESCE_ON_UPDATE = (
-    "description",
-    "welfare",
-    "salary_raw",
-    "salary_min",
-    "salary_max",
-    "location",
-    "education",
-    "employment_type",
-    "salary_period",
-    "posted_at",
-    "expires_at",
-    "company_id",
-    "field_id",
-)
+from app.domains.crawler.schemas import SkillDictionaryRow, UnmatchedTag
 
 
 async def get_field_ids(session: AsyncSession) -> dict[str, int]:
@@ -52,12 +35,12 @@ async def upsert_company(
     *,
     name: str,
     name_key: str,
-    description: str | None = None,
-    homepage: str | None = None,
-    founded: str | None = None,
-    industry: str | None = None,
-    employee_count: int | None = None,
-    revenue: int | None = None,
+    description: Optional[str] = None,
+    homepage: Optional[str] = None,
+    founded: Optional[str] = None,
+    industry: Optional[str] = None,
+    employee_count: Optional[int] = None,
+    revenue: Optional[int] = None,
     size_type: enums.CompanySize = enums.CompanySize.UNKNOWN,
 ) -> int:
     stmt = pg_insert(Company).values(
@@ -98,7 +81,7 @@ async def upsert_company_source(
     company_id: int,
     source: str,
     source_company_id: str,
-    url: str | None = None,
+    url: Optional[str] = None,
 ) -> None:
     stmt = pg_insert(CompanySource).values(
         company_id=company_id,
@@ -160,7 +143,7 @@ async def load_skill_entries(session: AsyncSession) -> list[SkillDictionaryRow]:
 
 
 async def count_unmatched_tags(
-    session: AsyncSession, *, source: str | None = None
+    session: AsyncSession, *, source: Optional[str] = None
 ) -> tuple[list[UnmatchedTag], int, int]:
     where_source = "WHERE p.source = :source" if source else ""
     sql = text(
@@ -193,26 +176,24 @@ async def count_unmatched_tags(
     return unmatched, total, matched_count
 
 
-_BODY_STOPWORDS = frozenset(
-    """
-    and the with for you our are can will not that this from have has your who its all any
-    data code web app apps api apis rest system systems service services server servers
-    software hardware platform platforms framework frameworks library libraries tool tools
-    engineer engineers engineering developer developers development develop team teams
-    experience experienced skill skills work working job jobs role roles position
-    company business product products project projects solution solutions
-    design designing architecture architectures management manage manager
-    support technical technology technologies application applications environment
-    process processes performance quality test testing analysis research
-    new using use used based level high low more most other than time year years
-    http https www com net org github google amazon microsoft apple
-    """.split()
-)
-
-
 async def count_unmatched_body_terms(
-    session: AsyncSession, *, source: str | None = None, min_count: int = 10, limit: int = 200
+    session: AsyncSession, *, source: Optional[str] = None, min_count: int = 10, limit: int = 200
 ) -> list[UnmatchedTag]:
+    stopwords = frozenset(
+        """
+        and the with for you our are can will not that this from have has your who its all any
+        data code web app apps api apis rest system systems service services server servers
+        software hardware platform platforms framework frameworks library libraries tool tools
+        engineer engineers engineering developer developers development develop team teams
+        experience experienced skill skills work working job jobs role roles position
+        company business product products project projects solution solutions
+        design designing architecture architectures management manage manager
+        support technical technology technologies application applications environment
+        process processes performance quality test testing analysis research
+        new using use used based level high low more most other than time year years
+        http https www com net org github google amazon microsoft apple
+        """.split()
+    )
     where_source = "AND p.source = :source" if source else ""
     sql = text(
         f"""
@@ -249,7 +230,7 @@ async def count_unmatched_body_terms(
     params: dict[str, Any] = {
         "min_count": min_count,
         "limit": limit,
-        "stopwords": list(_BODY_STOPWORDS),
+        "stopwords": list(stopwords),
     }
     if source:
         params["source"] = source
@@ -277,7 +258,7 @@ async def upsert_skill(
     session: AsyncSession,
     *,
     name: str,
-    category: str | None,
+    category: Optional[str],
     is_ambiguous: bool,
     is_common: bool = False,
 ) -> int:
@@ -330,8 +311,8 @@ async def replace_skill_fields(
 
 
 async def iter_postings_for_reparse(
-    session: AsyncSession, *, source: str | None = None, limit: int | None = None
-) -> list[tuple[int, str | None, list[str], dict[str, Any], int | None, str]]:
+    session: AsyncSession, *, source: Optional[str] = None, limit: Optional[int] = None
+) -> list[tuple[int, Optional[str], list[str], dict[str, Any], Optional[int], str]]:
     stmt = select(
         JobPosting.id,
         JobPosting.description,
@@ -356,7 +337,7 @@ async def update_posting_body(
     *,
     source: str,
     source_job_id: str,
-    description: str | None,
+    description: Optional[str],
     body_is_image: bool,
     body_extract_failed: bool,
 ) -> bool:
@@ -382,7 +363,7 @@ async def mark_body_extract_failed(session: AsyncSession, posting_id: int) -> bo
 
 
 async def update_posting_field(
-    session: AsyncSession, posting_id: int, field_id: int | None
+    session: AsyncSession, posting_id: int, field_id: Optional[int]
 ) -> None:
     await session.exec(
         JobPosting.__table__.update().where(JobPosting.id == posting_id).values(field_id=field_id)
@@ -416,7 +397,7 @@ async def replace_posting_skills(
 
 async def get_content_hashes(
     session: AsyncSession, source: str, source_job_ids: Sequence[str]
-) -> dict[str, str | None]:
+) -> dict[str, Optional[str]]:
     if not source_job_ids:
         return {}
     rows = (
@@ -467,7 +448,22 @@ def _conflict_update_set(excluded: Any) -> dict[str, Any]:
         "collected_at": excluded.collected_at,
         "raw_fields": excluded.raw_fields,
     }
-    for column in _COALESCE_ON_UPDATE:
+    # None 이 와도 기존 값을 지우지 않는 컬럼. 새 컬럼은 위 dict 나 여기에 꼭 넣는다
+    for column in (
+        "description",
+        "welfare",
+        "salary_raw",
+        "salary_min",
+        "salary_max",
+        "location",
+        "education",
+        "employment_type",
+        "salary_period",
+        "posted_at",
+        "expires_at",
+        "company_id",
+        "field_id",
+    ):
         set_[column] = func.coalesce(getattr(excluded, column), getattr(JobPosting, column))
     return set_
 
@@ -500,8 +496,8 @@ def _needs_embedding_clause() -> Any:
 async def iter_postings_to_embed(
     session: AsyncSession,
     *,
-    posting_ids: Sequence[int] | None = None,
-    limit: int | None = None,
+    posting_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
 ) -> list[tuple[int, str, str]]:
     stmt = (
         select(JobPosting.id, JobPosting.description, JobPosting.content_hash)
@@ -558,7 +554,7 @@ async def upsert_posting_chunk(
     content: str,
     chunk_hash: str,
     embedding: Sequence[float],
-    token_count: int | None = None,
+    token_count: Optional[int] = None,
 ) -> None:
     stmt = pg_insert(PostingChunk).values(
         posting_id=posting_id,
@@ -616,9 +612,9 @@ async def clear_posting_embed_hash(session: AsyncSession, posting_ids: Sequence[
 async def iter_companies_to_embed(
     session: AsyncSession,
     *,
-    company_ids: Sequence[int] | None = None,
-    limit: int | None = None,
-) -> list[tuple[int, str | None, str | None, str | None, str | None]]:
+    company_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
+) -> list[tuple[int, Optional[str], Optional[str], Optional[str], Optional[str]]]:
     stmt = (
         select(
             Company.id,
@@ -698,8 +694,8 @@ async def start_run(
     session: AsyncSession,
     *,
     kind: enums.RunKind,
-    source: str | None = None,
-    keyword: str | None = None,
+    source: Optional[str] = None,
+    keyword: Optional[str] = None,
 ) -> int:
     run = CrawlRun(kind=kind, source=source, keyword=keyword, status=enums.RunStatus.RUNNING)
     session.add(run)
@@ -735,7 +731,7 @@ async def finish_run(
     skipped: int = 0,
     embedded: int = 0,
     errors: int = 0,
-    message: str | None = None,
+    message: Optional[str] = None,
 ) -> None:
     await session.exec(
         CrawlRun.__table__.update()

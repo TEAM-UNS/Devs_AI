@@ -4,7 +4,7 @@ import copy
 import logging
 import re
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from typing import Optional, Any
 
 from bs4 import BeautifulSoup
 
@@ -15,47 +15,24 @@ from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseErr
 
 log = logging.getLogger(__name__)
 
-BASE = "https://www.saramin.co.kr"
-LIST_URL = f"{BASE}/zf_user/search"
-# 상세 페이지 조건 영역은 JS 렌더링이라 그 영역을 채우는 ajax 를 직접 부른다
-AJAX_URL = f"{BASE}/zf_user/jobs/relay/view-ajax"
-BODY_URL = f"{BASE}/zf_user/jobs/relay/view-detail"
-VIEW_URL = f"{BASE}/zf_user/jobs/relay/view?rec_idx={{rec_idx}}"
 
-PAGE_SIZE = 40
-KST = timezone(timedelta(hours=9))
-
-SELECTORS = {
-    "item": ".item_recruit",
-    "title_link": ".job_tit a",
-    "company": ".corp_name a",
-    "sector": ".job_sector",
-    "sector_noise": ".job_day",
-    "deadline": ".job_date .date",
-    "body": ".user_content",
-}
-
-_REC_IDX = re.compile(r"rec_idx=(\d+)")
-_CSN = re.compile(r"[?&]csn=([^&#]+)")
-_DEADLINE = re.compile(r"(\d{1,2})/(\d{1,2})")
-
-
-def _rec_idx(href: str | None) -> str | None:
-    match = _REC_IDX.search(href or "")
+def _rec_idx(href: Optional[str]) -> Optional[str]:
+    match = re.search(r"rec_idx=(\d+)", href or "")
     return match.group(1) if match else None
 
 
-def _parse_deadline(text: str | None) -> datetime | None:
+def _parse_deadline(text: Optional[str]) -> Optional[datetime]:
     if not text:
         return None
-    match = _DEADLINE.search(text)
+    match = re.search(r"(\d{1,2})/(\d{1,2})", text)
     if not match:
         return None
     month, day = int(match.group(1)), int(match.group(2))
-    today = datetime.now(KST)
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst)
     year = today.year
     try:
-        candidate = datetime(year, month, day, 23, 59, 59, tzinfo=KST)
+        candidate = datetime(year, month, day, 23, 59, 59, tzinfo=kst)
     except ValueError:
         return None
     if (candidate - today) < timedelta(days=-180):
@@ -63,7 +40,7 @@ def _parse_deadline(text: str | None) -> datetime | None:
     return candidate
 
 
-def _parse_datetime(text: str | None) -> datetime | None:
+def _parse_datetime(text: Optional[str]) -> Optional[datetime]:
     if not text:
         return None
     match = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", text)
@@ -73,13 +50,31 @@ def _parse_datetime(text: str | None) -> datetime | None:
     hour = int(match.group(4) or 0)
     minute = int(match.group(5) or 0)
     try:
-        return datetime(year, month, day, hour, minute, tzinfo=KST)
+        return datetime(year, month, day, hour, minute, tzinfo=timezone(timedelta(hours=9)))
     except ValueError:
         return None
 
 
 class SaraminCrawler(BaseSiteCrawler):
     source = "saramin"
+
+    BASE = "https://www.saramin.co.kr"
+    LIST_URL = f"{BASE}/zf_user/search"
+    # 상세 페이지 조건 영역은 JS 렌더링이라 그 영역을 채우는 ajax 를 직접 부른다
+    AJAX_URL = f"{BASE}/zf_user/jobs/relay/view-ajax"
+    BODY_URL = f"{BASE}/zf_user/jobs/relay/view-detail"
+    VIEW_URL = f"{BASE}/zf_user/jobs/relay/view?rec_idx={{rec_idx}}"
+    PAGE_SIZE = 40
+    SELECTORS = {
+        "item": ".item_recruit",
+        "title_link": ".job_tit a",
+        "company": ".corp_name a",
+        "sector": ".job_sector",
+        "sector_noise": ".job_day",
+        "deadline": ".job_date .date",
+        "body": ".user_content",
+    }
+
     referer = f"{BASE}/"
     concurrency = 2
 
@@ -95,22 +90,22 @@ class SaraminCrawler(BaseSiteCrawler):
 
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         soup = await self.get_soup(
-            LIST_URL,
+            self.LIST_URL,
             params={
                 "searchType": "search",
                 "searchword": self.keyword,
                 "recruitPage": page,
-                "recruitPageCount": PAGE_SIZE,
+                "recruitPageCount": self.PAGE_SIZE,
             },
             snapshot=f"list_p{page}",
         )
         return self.parse_list(soup, page)
 
     def parse_list(self, soup: BeautifulSoup, page: int) -> tuple[list[RawJob], int]:
-        items = soup.select(SELECTORS["item"])
+        items = soup.select(self.SELECTORS["item"])
         if not items:
             raise ParseError(
-                f"사람인 목록에서 {SELECTORS['item']} 를 찾지 못했습니다 (page={page}). "
+                f"사람인 목록에서 {self.SELECTORS['item']} 를 찾지 못했습니다 (page={page}). "
                 "사이트 개편일 가능성이 큽니다. data/raw/saramin/ 의 스냅샷을 확인하세요."
             )
 
@@ -134,20 +129,20 @@ class SaraminCrawler(BaseSiteCrawler):
         match = re.search(r"총\s*([\d,]+)\s*건", text)
         return int(match.group(1).replace(",", "")) if match else 0
 
-    def _map_list_item(self, item) -> RawJob | None:
-        link = item.select_one(SELECTORS["title_link"]) or item.select_one("a[href*='rec_idx=']")
+    def _map_list_item(self, item) -> Optional[RawJob]:
+        link = item.select_one(self.SELECTORS["title_link"]) or item.select_one("a[href*='rec_idx=']")
         rec_idx = _rec_idx(link.get("href") if link else None)
         if not rec_idx:
             return None
 
         title = (link.get("title") or link.get_text(" ", strip=True)).strip()
-        company_node = item.select_one(SELECTORS["company"])
+        company_node = item.select_one(self.SELECTORS["company"])
         company = company_node.get_text(" ", strip=True) if company_node else ""
 
-        sector = item.select_one(SELECTORS["sector"])
+        sector = item.select_one(self.SELECTORS["sector"])
         keywords: list[str] = []
         if sector:
-            noise = sector.select_one(SELECTORS["sector_noise"])
+            noise = sector.select_one(self.SELECTORS["sector_noise"])
             if noise:
                 noise.extract()
             keywords = [
@@ -156,12 +151,12 @@ class SaraminCrawler(BaseSiteCrawler):
                 if part.strip() and part.strip() != "외"
             ]
 
-        deadline_node = item.select_one(SELECTORS["deadline"])
+        deadline_node = item.select_one(self.SELECTORS["deadline"])
 
         return RawJob(
             source=self.source,
             source_job_id=rec_idx,
-            url=VIEW_URL.format(rec_idx=rec_idx),
+            url=self.VIEW_URL.format(rec_idx=rec_idx),
             title=title,
             company_name=company,
             tech_stacks=keywords,
@@ -176,7 +171,7 @@ class SaraminCrawler(BaseSiteCrawler):
         rec_idx = job.source_job_id
         try:
             condition_soup = await self.get_soup(
-                AJAX_URL, params={"rec_idx": rec_idx}, snapshot=f"cond_{rec_idx}"
+                self.AJAX_URL, params={"rec_idx": rec_idx}, snapshot=f"cond_{rec_idx}"
             )
         except CrawlError as exc:
             log.warning("사람인 조건 수집 실패 rec_idx=%s: %s", rec_idx, exc)
@@ -184,7 +179,7 @@ class SaraminCrawler(BaseSiteCrawler):
 
         try:
             body_soup = await self.get_soup(
-                BODY_URL,
+                self.BODY_URL,
                 params={"rec_idx": rec_idx, "rec_seq": 0},
                 snapshot=f"body_{rec_idx}",
             )
@@ -195,7 +190,7 @@ class SaraminCrawler(BaseSiteCrawler):
         return self.merge_detail(job, condition_soup, body_soup)
 
     def merge_detail(
-        self, job: RawJob, condition: BeautifulSoup, body: BeautifulSoup | None
+        self, job: RawJob, condition: BeautifulSoup, body: Optional[BeautifulSoup]
     ) -> RawJob:
         update: dict[str, Any] = {"detail_fetched": True}
 
@@ -237,7 +232,7 @@ class SaraminCrawler(BaseSiteCrawler):
 
         if body is not None:
             body = hu.strip_boilerplate(copy.copy(body))
-            node = body.select_one(SELECTORS["body"]) or body.body
+            node = body.select_one(self.SELECTORS["body"]) or body.body
             text = hu.block_text(node)
             is_image, failed, images = hu.classify_body(
                 node, text, is_valid=extractor.is_valid_body(text)
@@ -256,9 +251,9 @@ class SaraminCrawler(BaseSiteCrawler):
         return job.merged(clean)
 
     @staticmethod
-    def _company_csn(soup: BeautifulSoup) -> str | None:
+    def _company_csn(soup: BeautifulSoup) -> Optional[str]:
         for anchor in soup.select("a[href*='company-info']"):
-            if match := _CSN.search(anchor.get("href") or ""):
+            if match := re.search(r"[?&]csn=([^&#]+)", anchor.get("href") or ""):
                 return match.group(1)
         return None
 
@@ -279,4 +274,4 @@ class SaraminCrawler(BaseSiteCrawler):
 
 
 def _now_kst() -> datetime:
-    return datetime.now(UTC).astimezone(KST)
+    return datetime.now(UTC).astimezone(timezone(timedelta(hours=9)))

@@ -56,7 +56,7 @@ X-RateLimit-Reset: 1730000000
 
 ### `POST /api/v1/chat/stream`
 
-질문을 보내고 SSE로 답변을 스트리밍 받는다.
+질문을 보내고 SSE로 답변을 스트리밍 받는다. 호출은 백엔드가 하고, 백엔드가 스트림을 프론트로 넘긴다.
 
 > **프론트 주의**: 브라우저 `EventSource` 는 커스텀 헤더를 보낼 수 없다.
 > `fetch` + `ReadableStream` 으로 구현할 것. `AbortController` 로 중단 시 서버가 감지해 LLM 호출을 취소한다.
@@ -65,7 +65,7 @@ X-RateLimit-Reset: 1730000000
 
 ```json
 {
-  "session_id": "018f2a...",
+  "session_id": 42,
   "message": "React 쓰는 회사는 뭘 같이 요구해?",
   "profile": {
     "fields": ["frontend"],
@@ -79,7 +79,7 @@ X-RateLimit-Reset: 1730000000
 
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| `session_id` | string(uuid) | N | 없으면 새 세션 자동 생성 |
+| `session_id` | integer | N | 없으면 새 세션 자동 생성 |
 | `message` | string(1~2000) | Y | 질문 |
 | `profile` | object | N | 개인화 컨텍스트. 없으면 일반 답변 |
 
@@ -101,7 +101,7 @@ X-Accel-Buffering: no
 세션이 새로 생성되었거나 확정되었을 때 최초 1회.
 ```
 event: session
-data: {"session_id":"018f2a...","title":"React 관련 요구 기술","is_new":true}
+data: {"session_id":42,"title":"React 관련 요구 기술","is_new":true}
 ```
 
 #### `tool_start`
@@ -186,7 +186,7 @@ session → tool_start → graph → token × N → done
 {
   "sessions": [
     {
-      "id": "018f2a...",
+      "id": 42,
       "title": "React 관련 요구 기술",
       "message_count": 6,
       "last_message_at": "2026-07-29T10:12:03Z",
@@ -209,7 +209,7 @@ session → tool_start → graph → token × N → done
 
 **Response** `201`
 ```json
-{ "id":"018f2b...", "title":"새 대화", "created_at":"2026-07-29T10:20:00Z" }
+{ "id":43, "title":"새 대화", "created_at":"2026-07-29T10:20:00Z" }
 ```
 
 ### `GET /api/v1/chat/sessions/{session_id}`
@@ -219,7 +219,7 @@ session → tool_start → graph → token × N → done
 **Response** `200`
 ```json
 {
-  "id": "018f2a...",
+  "id": 42,
   "title": "React 관련 요구 기술",
   "messages": [
     { "id":1041, "seq":1, "role":"user",
@@ -301,10 +301,10 @@ session → tool_start → graph → token × N → done
 ### `GET /health`
 
 ```json
-{ "status":"ok", "db":"ok", "redis":"ok", "llm":"ok" }
+{ "db": true, "redis": true }
 ```
 
-의존성 중 하나라도 실패하면 `503` 과 함께 실패 항목을 표시한다.
+실패한 항목은 `false` 로 표시한다. 상태 코드는 항상 `200`.
 
 ---
 
@@ -385,6 +385,8 @@ session → tool_start → graph → token × N → done
 ---
 
 ## 6. 프론트 연동 참고
+
+프론트는 이 서버를 직접 부르지 않고 백엔드를 거쳐 스트림을 받는다. 아래는 SSE 수신 쪽 참고용이다.
 
 ### 스트리밍 수신 예시
 

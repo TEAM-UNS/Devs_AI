@@ -5,24 +5,25 @@ IT 채용공고를 수집·분석해 AI 챗봇으로 답변하는 서비스의 �
 
 ## 기술 스택
 
-- Python 3.12, 전부 async
-- FastAPI / SQLAlchemy 2.0 async / Alembic
+- Python 3.13, 전부 async
+- FastAPI / SQLAlchemy 2.0 async
 - **드라이버는 psycopg3 로 통일** (asyncpg 쓰지 말 것 — LangGraph checkpointer와 통일)
 - Postgres 16 + pgvector, Redis
 - arq (배치), LangGraph (챗봇)
 - 패키지 관리: uv
+- 실제 DB 는 백엔드 소유(같은 구조). alembic · init.sql 은 로컬 테스트용이라 저장소에 없다
 
 ## 아키텍처 규칙
 
-- app/domains/{market,crawler,chat} 3개 도메인
-- market 은 데이터의 주인. 아무 도메인도 import 하지 않는다
-- crawler → market.repository (쓰기)만
-- chat → market.queries (읽기)만. market.models / repository 직접 참조 금지
-- 외부 API(LLM, 임베딩)만 포트/어댑터로 분리. 리포지토리는 인터페이스 만들지 않는다
-- Enum · 비즈니스 상수는 그 값을 소유한 도메인에 둔다
-  (market/enums.py, chat/enums.py). core 에는 인프라(config·database·redis)와
-  예외 기반 클래스만 둔다
-- 예외는 core/exceptions.py 에 AppError + 핸들러만. 구체 예외는 각 도메인이 소유한다
+- app/domains/{crawler,chat,report} 3개 도메인. report 는 아직 빈 뼈대
+- 공유 테이블은 Postgres `market` 스키마에 있고, models · repository · enums · seed_data 는 crawler 가 소유한다
+- 의존 방향은 chat → crawler 하나. chat 은 자기 queries.py 로 crawler.models 를 읽기만 한다
+- 외부 API 는 app/infra 에 둔다. 임베딩은 EmbedderPort + 어댑터, 생성 LLM 은
+  build_chat_model() 이 주는 LangChain 채팅 모델(Gemini)을 그대로 쓴다. 리포지토리는 인터페이스 만들지 않는다
+- Enum 은 그 값을 소유한 도메인에 둔다 (crawler/enums.py, chat/enums.py).
+  모듈 상수는 두지 않는다. 설정값은 settings, 사이트 상수는 크롤러 클래스 속성으로
+- core 에는 인프라(config·database·redis·dependencies·logging·middleware)와 예외 기반 클래스만 둔다
+- 예외는 core/exception/ 에 AppException · UpstreamError + 핸들러만. 구체 예외는 각 도메인이 소유한다
 
 ## 코딩 규칙
 

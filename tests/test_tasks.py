@@ -2,26 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Optional, Any
 
 import pytest
 
 from app.core.config import get_settings
 from app.domains.crawler import tasks
-from app.domains.crawler.config import (
-    CRAWL_CONFIG,
-    KEYWORDS,
-    SITE_CLASSES,
-    iter_crawl_jobs,
-)
+from app.domains.crawler.config import build_crawler, iter_crawl_jobs
+from app.domains.crawler.sites.jobkorea import JobkoreaCrawler
 
 
 class FakeRedis:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[Any, ...], str | None]] = []
+        self.calls: list[tuple[str, tuple[Any, ...], Optional[str]]] = []
         self._taken: set[str] = set()
 
-    async def enqueue_job(self, name: str, *args: Any, _job_id: str | None = None, **_: Any):
+    async def enqueue_job(self, name: str, *args: Any, _job_id: Optional[str] = None, **_: Any):
         if _job_id is not None and _job_id in self._taken:
             return None  # arq 는 중복 job_id 에 None 을 돌려준다
         if _job_id is not None:
@@ -39,20 +35,19 @@ def test_config_expands_to_10_jobs() -> None:
         by_site[job.site] = by_site.get(job.site, 0) + 1
 
     assert by_site == {"jumpit": 1, "wanted": 1, "saramin": 8}
-    assert len(KEYWORDS) == 8
+    assert len({job.keyword for job in jobs if job.site == "saramin"}) == 8
 
 
-def test_jobkorea_is_out_of_the_batch_but_still_buildable() -> None:
-    assert "jobkorea" not in CRAWL_CONFIG
+def test_jobkorea_is_out_of_the_batch_but_still_buildable(tmp_path) -> None:
     assert all(job.site != "jobkorea" for job in iter_crawl_jobs())
-    assert "jobkorea" in SITE_CLASSES
+    assert isinstance(build_crawler("jobkorea", snapshot_dir=tmp_path), JobkoreaCrawler)
 
 
 def test_keywordless_sites_get_no_keyword() -> None:
     jobs = {j.site: j for j in iter_crawl_jobs() if j.site in {"jumpit", "wanted"}}
     assert jobs["jumpit"].keyword is None
     assert jobs["wanted"].keyword is None
-    assert jobs["jumpit"].pages == CRAWL_CONFIG["jumpit"]["pages"]
+    assert jobs["jumpit"].pages == 40
 
 
 async def test_dispatch_fans_out_with_dedup_job_ids() -> None:
@@ -87,7 +82,7 @@ async def test_dispatch_passes_skip_seen_days() -> None:
     for _, args, _ in redis.calls:
         site, _keyword, pages, skip_seen_days = args
         assert skip_seen_days == 7
-        assert pages == CRAWL_CONFIG[site]["pages"]
+        assert pages == {"jumpit": 40, "wanted": 30, "saramin": 8}[site]
 
 
 class _Stats:

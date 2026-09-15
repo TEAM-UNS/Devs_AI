@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from app.llm.embed.gemini_embed_adapter import (
-    TOKEN_SAFETY,
-    TOKENS_PER_CHAR,
-    TOKENS_PER_CHAR_FLOOR,
-    _TokenBudget,
-)
+from app.infra.embedding.adapters.api import _TokenBudget
 
 
 def test_starts_from_the_conservative_default() -> None:
     budget = _TokenBudget()
-    assert budget.ratio == TOKENS_PER_CHAR
-    assert budget.estimate(["가" * 100]) == round(100 * TOKENS_PER_CHAR)
+    assert budget.ratio == _TokenBudget.TOKENS_PER_CHAR
+    assert budget.estimate(["가" * 100]) == round(100 * _TokenBudget.TOKENS_PER_CHAR)
 
 
 def test_underestimate_is_corrected_immediately() -> None:
@@ -43,7 +38,11 @@ def test_converges_toward_observed_with_margin() -> None:
     for _ in range(50):
         budget.observe(texts, actual_tokens=625)
 
-    assert 0.625 * TOKEN_SAFETY - 0.01 <= budget.ratio <= 0.625 * TOKEN_SAFETY + 0.01
+    assert (
+        0.625 * _TokenBudget.TOKEN_SAFETY - 0.01
+        <= budget.ratio
+        <= 0.625 * _TokenBudget.TOKEN_SAFETY + 0.01
+    )
 
 
 def test_never_goes_below_the_floor() -> None:
@@ -51,7 +50,7 @@ def test_never_goes_below_the_floor() -> None:
     for _ in range(200):
         budget.observe(["가" * 1000], actual_tokens=1)
 
-    assert budget.ratio >= TOKENS_PER_CHAR_FLOOR
+    assert budget.ratio >= _TokenBudget.TOKENS_PER_CHAR_FLOOR
 
 
 def test_ignores_garbage_observations() -> None:

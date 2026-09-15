@@ -1,13 +1,14 @@
 # arq Redis 풀과 키 이름 규칙
 
 from datetime import datetime
+from typing import Optional
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
 
 from app.core.config import get_settings
 
-_pool: ArqRedis | None = None
+_pool: Optional[ArqRedis] = None
 
 
 def redis_settings() -> RedisSettings:

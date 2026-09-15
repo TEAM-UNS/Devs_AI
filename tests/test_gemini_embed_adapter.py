@@ -7,9 +7,9 @@ import pytest
 import respx
 
 from app.core.config import get_settings
-from app.llm.exceptions import UpstreamError
-from app.llm.embed.gemini_embed_adapter import MAX_BATCH, MAX_INPUT_CHARS, GeminiEmbedder
-from app.llm.embed.port import EmbedderPort
+from app.core.exception.exceptions import UpstreamError
+from app.infra.embedding.adapters.api import GeminiEmbedder
+from app.infra.embedding.port import EmbedderPort
 
 _URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:batchEmbedContents"
@@ -97,12 +97,12 @@ async def test_batch_is_capped_at_the_api_limit() -> None:
     route = respx.post(_URL).mock(side_effect=lambda req: _ok(_count(req)))
 
     embedder = GeminiEmbedder(batch_size=250)
-    assert embedder.batch_size == MAX_BATCH
+    assert embedder.batch_size == GeminiEmbedder.MAX_BATCH
 
     vectors = await embedder.embed_documents([f"텍스트{i}" for i in range(250)])
     assert len(vectors) == 250
     assert route.call_count == 3
-    assert all(_count(c.request) <= MAX_BATCH for c in route.calls)
+    assert all(_count(c.request) <= GeminiEmbedder.MAX_BATCH for c in route.calls)
 
 
 def _count(request: httpx.Request) -> int:
@@ -114,12 +114,12 @@ def _count(request: httpx.Request) -> int:
 @respx.mock
 async def test_oversized_text_is_truncated_not_rejected() -> None:
     route = respx.post(_URL).mock(return_value=_ok(1))
-    await GeminiEmbedder().embed_documents(["가" * (MAX_INPUT_CHARS + 5000)])
+    await GeminiEmbedder().embed_documents(["가" * (GeminiEmbedder.MAX_INPUT_CHARS + 5000)])
 
     import json
 
     sent = json.loads(route.calls[0].request.read())["requests"][0]["content"]["parts"][0]["text"]
-    assert len(sent) == MAX_INPUT_CHARS
+    assert len(sent) == GeminiEmbedder.MAX_INPUT_CHARS
 
 
 @respx.mock

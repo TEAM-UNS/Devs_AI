@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from app.domains.crawler.chunker import (
-    CHUNK_MAX_CHARS,
     build_chunks,
     hash_chunk,
     normalize,
 )
-from app.domains.market.enums import ChunkSection
+from app.domains.crawler.enums import ChunkSection
 
 FULL_BODY = """[주요업무]
 - 결제 서버 API 개발 및 운영
@@ -73,14 +72,14 @@ def test_long_section_splits_by_seq() -> None:
     assert len(chunks) > 1
     assert all(c.section is ChunkSection.RESPONSIBILITY for c in chunks)
     assert [c.seq for c in chunks] == list(range(len(chunks)))
-    assert all(len(c.content) <= CHUNK_MAX_CHARS for c in chunks)
+    assert all(len(c.content) <= 1200 for c in chunks)
 
 
 def test_line_longer_than_limit_is_force_split() -> None:
-    body = "[주요업무]\n" + ("가" * (CHUNK_MAX_CHARS * 2 + 100))
+    body = "[주요업무]\n" + ("가" * (1200 * 2 + 100))
     chunks = build_chunks(body)
     assert len(chunks) >= 2
-    assert all(len(c.content) <= CHUNK_MAX_CHARS for c in chunks)
+    assert all(len(c.content) <= 1200 for c in chunks)
 
 
 def test_hash_ignores_whitespace_only_changes() -> None:

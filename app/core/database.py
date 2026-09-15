@@ -5,13 +5,9 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import get_settings
-
-# alembic/env.py 가 target_metadata 로 쓴다
-metadata = SQLModel.metadata
 
 settings = get_settings()
 

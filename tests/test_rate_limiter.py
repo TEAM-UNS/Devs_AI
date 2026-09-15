@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from app.llm.embed.gemini_embed_adapter import _RateLimiter
+from app.infra.embedding.adapters.api import _RateLimiter
 
 
 async def test_oversized_request_is_sent_instead_of_hanging() -> None:

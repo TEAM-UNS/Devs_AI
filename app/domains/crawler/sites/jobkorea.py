@@ -4,7 +4,7 @@ import copy
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Optional, Any
 
 from bs4 import BeautifulSoup, Tag
 
@@ -15,39 +15,13 @@ from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseErr
 
 log = logging.getLogger(__name__)
 
-BASE = "https://www.jobkorea.co.kr"
-LIST_URL = f"{BASE}/Search/"
-DETAIL_URL = f"{BASE}/Recruit/GI_Read/{{job_id}}"
 
-KST = timezone(timedelta(hours=9))
-
-# 봇 탐지가 있어 딜레이 2.5초, 동시성 1 을 유지한다
-DELAY_SECONDS = 2.5
-CONCURRENCY = 1
-
-SELECTORS = {
-    "job_link": "a[href*='/Recruit/GI_Read/']",
-    "body_fallback": "#tbCont, .tbCont, .detailArea, .view-content",
-}
-
-_JOB_ID = re.compile(r"/Recruit/GI_Read/(\d+)")
-_EMPLOYMENT = {
-    "FULL_TIME": "정규직",
-    "PART_TIME": "파트타임",
-    "CONTRACTOR": "계약직",
-    "TEMPORARY": "계약직",
-    "INTERN": "인턴",
-}
-_UNIT_LABEL = {"YEAR": "", "MONTH": "월 ", "HOUR": "시급 "}
-_WON_PER_MAN = 10_000
-
-
-def _job_id(href: str | None) -> str | None:
-    match = _JOB_ID.search(href or "")
+def _job_id(href: Optional[str]) -> Optional[str]:
+    match = re.search(r"/Recruit/GI_Read/(\d+)", href or "")
     return match.group(1) if match else None
 
 
-def _parse_date(value: Any) -> datetime | None:
+def _parse_date(value: Any) -> Optional[datetime]:
     text = hu.jsonld_text(value)
     if not text:
         return None
@@ -55,10 +29,10 @@ def _parse_date(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(text.strip())
     except ValueError:
         return None
-    return parsed.replace(tzinfo=KST) if parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=timezone(timedelta(hours=9))) if parsed.tzinfo is None else parsed
 
 
-def salary_text_from_jsonld(base_salary: Any) -> str | None:
+def salary_text_from_jsonld(base_salary: Any) -> Optional[str]:
     if not isinstance(base_salary, dict):
         return None
     value = base_salary.get("value")
@@ -70,19 +44,39 @@ def salary_text_from_jsonld(base_salary: Any) -> str | None:
     if (base_salary.get("currency") or "KRW").upper() != "KRW":
         return None
 
-    man_won = int(amount) // _WON_PER_MAN
+    man_won = int(amount) // 10_000
     if man_won <= 0:
         return None
-    return f"{_UNIT_LABEL.get(unit.upper(), '')}{man_won:,}만원"
+    unit_label = {"YEAR": "", "MONTH": "월 ", "HOUR": "시급 "}
+    return f"{unit_label.get(unit.upper(), '')}{man_won:,}만원"
 
 
 class JobkoreaCrawler(BaseSiteCrawler):
     source = "jobkorea"
+
+    BASE = "https://www.jobkorea.co.kr"
+    LIST_URL = f"{BASE}/Search/"
+    DETAIL_URL = f"{BASE}/Recruit/GI_Read/{{job_id}}"
+    SELECTORS = {
+        "job_link": "a[href*='/Recruit/GI_Read/']",
+        "body_fallback": "#tbCont, .tbCont, .detailArea, .view-content",
+    }
+    _EMPLOYMENT = {
+        "FULL_TIME": "정규직",
+        "PART_TIME": "파트타임",
+        "CONTRACTOR": "계약직",
+        "TEMPORARY": "계약직",
+        "INTERN": "인턴",
+    }
+
+    # 봇 탐지가 있어 딜레이 2.5초, 동시성 1 을 유지한다
+    DELAY_SECONDS = 2.5
+    concurrency = 1
+
     referer = f"{BASE}/"
-    concurrency = CONCURRENCY
 
     def __init__(self, *, keyword: str = "백엔드", **kwargs: Any) -> None:
-        kwargs.setdefault("delay", DELAY_SECONDS)
+        kwargs.setdefault("delay", self.DELAY_SECONDS)
         super().__init__(**kwargs)
         self.keyword = keyword
 
@@ -94,14 +88,14 @@ class JobkoreaCrawler(BaseSiteCrawler):
 
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         soup = await self.get_soup(
-            LIST_URL,
+            self.LIST_URL,
             params={"stext": self.keyword, "tabType": "recruit", "Page_No": page},
             snapshot=f"list_p{page}",
         )
         return self.parse_list(soup, page)
 
     def parse_list(self, soup: BeautifulSoup, page: int) -> tuple[list[RawJob], int]:
-        links = soup.select(SELECTORS["job_link"])
+        links = soup.select(self.SELECTORS["job_link"])
         if not links:
             raise ParseError(
                 f"잡코리아 목록에서 공고 링크를 찾지 못했습니다 (page={page}). "
@@ -122,7 +116,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
                 RawJob(
                     source=self.source,
                     source_job_id=job_id,
-                    url=DETAIL_URL.format(job_id=job_id),
+                    url=self.DETAIL_URL.format(job_id=job_id),
                     title=title,
                     company_name=self._company_near(link),
                 )
@@ -131,7 +125,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
 
     @staticmethod
     def _company_near(link: Tag) -> str:
-        block: Tag | None = link
+        block: Optional[Tag] = link
         for _ in range(5):
             if block is None or block.parent is None:
                 break
@@ -144,7 +138,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
     async def fetch_detail(self, job: RawJob) -> RawJob:
         try:
             soup = await self.get_soup(
-                DETAIL_URL.format(job_id=job.source_job_id),
+                self.DETAIL_URL.format(job_id=job.source_job_id),
                 snapshot=f"position_{job.source_job_id}",
             )
         except CrawlError as exc:
@@ -171,7 +165,7 @@ class JobkoreaCrawler(BaseSiteCrawler):
                 "title": hu.jsonld_text(posting.get("title")) or job.title,
                 "company_name": hu.jsonld_text(org) or job.company_name,
                 "education": hu.jsonld_text(posting.get("educationRequirements")),
-                "employment_type": _EMPLOYMENT.get(employment or "", employment),
+                "employment_type": self._EMPLOYMENT.get(employment or "", employment),
                 "career_min": career_min,
                 "career_max": career_max,
                 "newcomer": career_min == 0,
@@ -196,9 +190,9 @@ class JobkoreaCrawler(BaseSiteCrawler):
     def extract_body(soup: BeautifulSoup) -> dict[str, Any]:
         soup = hu.strip_boilerplate(copy.copy(soup))
 
-        node = soup.select_one(SELECTORS["body_fallback"])
+        node = soup.select_one(JobkoreaCrawler.SELECTORS["body_fallback"])
         if node is None or not hu.block_text(node):
-            node = hu.section_anchored_block(soup, extractor.SECTION_RE)
+            node = hu.section_anchored_block(soup, extractor.section_header_pattern())
         if node is None:
             node = hu.largest_text_block(soup)
 

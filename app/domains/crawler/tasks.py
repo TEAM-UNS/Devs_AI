@@ -3,25 +3,29 @@
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Optional, Any, Union
+
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import get_settings
 from app.core.redis import crawl_job_id
 from app.domains.crawler import embed_service
 from app.domains.crawler.config import (
-    DEFAULT_SKIP_SEEN_DAYS,
     build_crawler,
     iter_crawl_jobs,
 )
 from app.domains.crawler.service import CrawlService
-from app.domains.market import enums, repository
-from app.llm.embed.port import EmbedderPort
+from app.domains.crawler import enums, repository
+from app.infra.embedding.port import EmbedderPort
 
 log = logging.getLogger(__name__)
 
 
 # 세션팩토리와 임베더는 on_startup 이 ctx 에 넣어둔 것만 쓴다 (새로 만들면 풀이 늘어난다)
-def _sessionmaker(ctx: dict[str, Any]) -> embed_service.SessionFactory:
+def _sessionmaker(
+    ctx: dict[str, Any],
+) -> Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]]:
     factory = ctx.get("sessionmaker")
     if factory is None:
         raise RuntimeError(
@@ -50,7 +54,7 @@ async def crawl_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
             job.site,
             job.keyword,
             job.pages,
-            DEFAULT_SKIP_SEEN_DAYS,
+            get_settings().crawl_skip_seen_days,
             _job_id=crawl_job_id(job.site, job.job_key, day),
         )
         if result is None:
@@ -66,10 +70,12 @@ async def crawl_dispatch(ctx: dict[str, Any]) -> dict[str, Any]:
 async def crawl_site(
     ctx: dict[str, Any],
     site: str,
-    keyword: str | None = None,
+    keyword: Optional[str] = None,
     pages: int = 1,
-    skip_seen_days: int = DEFAULT_SKIP_SEEN_DAYS,
+    skip_seen_days: Optional[int] = None,
 ) -> dict[str, Any]:
+    if skip_seen_days is None:
+        skip_seen_days = get_settings().crawl_skip_seen_days
     log.info(
         "crawl_site 시작: site=%s keyword=%s pages=%d skip_seen_days=%d",
         site,
@@ -112,7 +118,7 @@ async def embed_postings(ctx: dict[str, Any], posting_ids: list[int]) -> dict[st
     )
 
 
-async def embed_backfill(ctx: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
+async def embed_backfill(ctx: dict[str, Any], limit: Optional[int] = None) -> dict[str, Any]:
     cap = limit or get_settings().embed_backfill_limit
     return await _run_embed(
         ctx,
@@ -121,7 +127,7 @@ async def embed_backfill(ctx: dict[str, Any], limit: int | None = None) -> dict[
     )
 
 
-async def embed_companies(ctx: dict[str, Any], limit: int | None = None) -> dict[str, Any]:
+async def embed_companies(ctx: dict[str, Any], limit: Optional[int] = None) -> dict[str, Any]:
     return await _run_embed(
         ctx,
         source="companies",
@@ -136,7 +142,8 @@ async def _run_embed(
     *,
     source: str,
     runner: Callable[
-        [embed_service.SessionFactory, EmbedderPort], Awaitable[embed_service.EmbedStats]
+        [Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]], EmbedderPort],
+        Awaitable[embed_service.EmbedStats],
     ],
 ) -> dict[str, Any]:
     factory = _sessionmaker(ctx)

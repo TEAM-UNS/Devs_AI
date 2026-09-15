@@ -2,16 +2,16 @@
 
 ```
 tests/
-├── conftest.py
-├── crawler/     사이트 파서(저장된 스냅샷 기준) · 스택 추출 · 연봉 파싱 · 청크 분할
-├── market/      queries 집계 정확도 (연봉 분위수 · NPMI · 유사도 가중치)
-├── chat/        툴 스펙 유효성 · 그래프 툴 루프 · SSE 이벤트 순서 · 스코프 가드
-└── llm/         port 계약 (fake 어댑터로 검증)
+├── conftest.py   fake_embedder · db 픽스처 (postgres 에 못 붙으면 skip)
+├── fixtures/     사이트 HTML 스냅샷 (사람인 · 잡코리아)
+└── test_*.py     사이트 파서 · 본문 추출 · 스택 추출 · 청크 분할 · 증분 수집
+                  · 임베딩 파이프라인 · 임베딩 어댑터 · 태스크 · CORS
 ```
 
 ## 원칙
 
-- 외부 API 호출 금지. LLM·임베딩은 `fake.py`, 사이트는 저장된 스냅샷으로.
+- 외부 API 호출 금지. 임베딩은 `FakeEmbedder`(`app/infra/embedding/adapters/fake.py`),
+  사이트는 저장된 스냅샷으로.
 - 크롤러 테스트는 **네트워크를 타지 않는다**. 셀렉터가 깨졌는지는
   스냅샷 갱신 시점에만 확인한다.
 - DB 테스트는 실제 postgres+pgvector 를 쓴다. 벡터 연산자(`<=>`)와

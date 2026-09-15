@@ -9,45 +9,49 @@
 
 ```
 ai-service/
-├── docker-compose.yml              postgres(pgvector) + redis
-├── init.sql                        스키마 · 권한 · extension
-├── alembic/                        마이그레이션
+├── docker-compose.yml              postgres(pgvector) + redis + arq worker
 ├── pyproject.toml
 ├── .env.example
 │
 ├── app/
-│   ├── main.py                     FastAPI 앱 · 라우터 등록 · lifespan
+│   ├── main.py                     FastAPI 앱 · lifespan · /health
 │   ├── worker.py                   arq WorkerSettings · cron 정의
+│   ├── cli.py                      crawl · embed · reparse · vector-index(HNSW DDL) · skills report
 │   │
 │   ├── core/                       ── 도메인 아닌 것 ──
 │   │   ├── config.py               환경설정 (pydantic-settings)
 │   │   ├── database.py             async engine · sessionmaker · get_session
-│   │   ├── redis.py                arq redis pool
-│   │   ├── security.py             JWT 디코드 · 검증
-│   │   ├── deps.py                 get_current_user
-│   │   ├── enums.py                CompanySize · TechField · Requirement · ChunkSection
-│   │   └── exceptions.py           도메인 예외 → HTTP 매핑
+│   │   ├── redis.py                arq redis pool · 키 이름 규칙
+│   │   ├── dependencies.py         SessionDep · RedisDep
+│   │   ├── logging.py              로깅 설정
+│   │   ├── middleware.py           CORS
+│   │   ├── security.py             (비어 있음)
+│   │   └── exception/
+│   │       ├── exceptions.py       AppException · UpstreamError
+│   │       └── handlers.py         예외 → HTTP 응답
 │   │
-│   ├── llm/                        ══ 클린 아키텍처 적용 구간 ══
-│   │   ├── port.py                 LLMPort · EmbedderPort (Protocol)
-│   │   ├── chat_adapter.py         실제 LLM 어댑터
-│   │   ├── embed_adapter.py        임베딩 API 어댑터
-│   │   └── fake.py                 테스트용 어댑터 (API 키 불필요)
+│   ├── infra/                      ══ 외부 API ══
+│   │   ├── embedding/
+│   │   │   ├── port.py             EmbedderPort (Protocol)
+│   │   │   ├── factory.py          build_embedder() — EMBED_PROVIDER 로 gemini/fake 선택
+│   │   │   └── adapters/
+│   │   │       ├── api.py          GeminiEmbedder
+│   │   │       ├── local.py        LocalEmbedder (bge-m3)
+│   │   │       └── fake.py         테스트용 (API 키 불필요)
+│   │   └── llm/
+│   │       └── client.py           build_chat_model() → ChatGoogleGenerativeAI (Gemini)
 │   │
 │   └── domains/
-│       ├── market/                 ══ 데이터의 주인 ══
+│       ├── crawler/                ══ 수집·적재·임베딩. market 스키마 테이블의 주인 ══
 │       │   ├── models.py           company · company_source · job_posting
 │       │   │                       posting_skill · posting_chunk
 │       │   │                       skill · skill_alias · skill_field · tech_field
 │       │   │                       crawl_run
-│       │   ├── repository.py       upsert · 조회 (크롤러 전용, 쓰기)
-│       │   ├── queries.py          ★ 읽기 전용 (챗봇 툴 전용)
-│       │   ├── similarity.py       유사 기업 계산 (스택+설명+규모)
-│       │   ├── schemas.py          DTO
-│       │   └── dependencies.py
-│       │
-│       ├── crawler/                ══ 수집·적재만 ══
-│       │   ├── service.py          수집 오케스트레이션 → market.repository
+│       │   ├── repository.py       upsert · 조회 (쓰기)
+│       │   ├── enums.py            CompanySize · TechField · Requirement · ChunkSection 등
+│       │   ├── seed_data.py        field_catalog() · skill_catalog()
+│       │   ├── config.py           iter_crawl_jobs() · build_crawler()
+│       │   ├── service.py          수집 오케스트레이션 → repository
 │       │   ├── extractor.py        스택 추출 (섹션 분할 + 별칭 매칭)
 │       │   ├── chunker.py          본문 → 섹션 청크 분할
 │       │   ├── embed_service.py    청크 임베딩 · 기업 프로필 임베딩
@@ -55,23 +59,31 @@ ai-service/
 │       │   ├── tasks.py            ★ arq 태스크
 │       │   └── sites/
 │       │       ├── base.py         딜레이 · 재시도 · 감속 · 스냅샷
+│       │       ├── htmlutil.py     보일러플레이트 제거 · 본문 판정
 │       │       ├── saramin.py
 │       │       ├── jobkorea.py
 │       │       ├── wanted.py
 │       │       └── jumpit.py
 │       │
-│       └── chat/                   ══ 어시스턴트 ══
-│           ├── router.py           /chat/* 엔드포인트
-│           ├── schemas.py          요청/응답 Pydantic
+│       ├── report/                 ══ 주간 리포트 (빈 뼈대) ══
+│       │                           백엔드가 우리 API 를 웹훅으로 호출하면 생성.
+│       │                           market.report 테이블은 백엔드가 정의
+│       │
+│       └── chat/                   ══ 어시스턴트 (서비스 미구현, graph · tools · guard 는 대부분 스텁) ══
+│           ├── queries.py          ★ 읽기 전용 (챗봇 툴용). crawler.models 를 읽는다. 유사 기업 계산 포함
+│           ├── schemas.py          queries 결과 DTO
 │           ├── models.py           chat_session · chat_message · chat_tool_call
+│           ├── router.py           /chat/* 엔드포인트
 │           ├── repository.py
-│           ├── service.py          세션 생성 · 히스토리 · 저장
-│           ├── dependencies.py
-│           ├── stream.py           astream_events → SSE 직렬화
+│           ├── service.py          세션 · 히스토리 · SSE 스트리밍
+│           ├── dependencies.py     ChatQueriesDep
+│           ├── enums.py            MessageRole
+│           ├── exceptions.py
 │           ├── guard.py            스코프 검사 · 레이트리밋
 │           ├── graph/
 │           │   ├── state.py        ChatState
 │           │   ├── nodes.py        load_context · guard · agent · persist
+│           │   ├── prompts.py
 │           │   └── build.py        StateGraph 조립 · checkpointer
 │           └── tools/
 │               ├── registry.py     ALL_TOOLS
@@ -142,8 +154,12 @@ ai-service/
 **① 보일러플레이트 제거가 수율을 결정한다.** 이걸 빠뜨리면 네비게이션·추천공고·합격자소서 후기가 본문에 섞여 유효 판정을 통과하지 못한다. 잡코리아 본문 수율이 **18% → 79%** 로 뛴 원인이 이것이다. 개별 별칭 제거(`AI` 등)로 대응하지 말고 소스에서 크롬을 걷어내야 한다.
 
 ```python
-BOILERPLATE = ("nav, header, footer, aside, .related, .recommend, "
-               "[class*='banner'], [class*='ad-'], [class*='recommend']")
+# sites/htmlutil.py strip_boilerplate()
+boilerplate = (
+    "nav, header, footer, aside, .related, .recommend, "
+    "[class*='banner'], [class*='ad-'], [class*='recommend'], "
+    "[class*='related'], [id*='recommend'], [role='navigation']"
+)
 ```
 
 > `extract_body` 는 반드시 soup **복사본**에서 작업한다. 원본을 `decompose()` 하면 호출부가 나중에 JSON-LD를 읽을 때 사라져 있다.
@@ -151,13 +167,17 @@ BOILERPLATE = ("nav, header, footer, aside, .related, .recommend, "
 **③ 유효성 판정은 길이가 아니라 내용으로 한다.**
 
 ```python
-def is_valid_body(text: str) -> bool:
-    return bool(SECTION_RE.search(text)) or len(extractor.extract(text)) > 0
+def is_valid_body(text: Optional[str], matcher: Optional[SkillMatcher] = None) -> bool:
+    if not text or not text.strip():
+        return False
+    if section_header_pattern().search(text):
+        return True
+    return bool((matcher or _default_matcher()).extract(description=text))
 ```
 
 길이 기준(`200자 미만`)은 본문의 정의가 아니다. 페이지 안내문이 543자면 정상으로 통과한다. 실패 시 `body_extract_failed=true` 로 표시하고 **집계 쿼리에서 제외**한다.
 
-**`SECTION_RE` 에서 제외할 것** — 요약 표의 라벨은 섹션 헤더가 아니다.
+**`section_header_pattern()` 에서 제외할 것** — 요약 표의 라벨은 섹션 헤더가 아니다.
 
 | 제외 | 유지 |
 |---|---|
@@ -217,7 +237,7 @@ FROM (...) GROUP BY source;
 | 공고 임베딩 | `embed_hash ≠ content_hash` 인 공고만 대상. 청크별 `chunk_hash` 비교로 변경분만 재임베딩 | posting_ids[] | API 실패 시 재시도 3회, 최종 실패 시 `embed_hash` 미갱신 → 다음 백필에서 재처리 |
 | 기업 프로필 임베딩 | `description + business_content + industry` 를 합쳐 임베딩 | company_ids[] | 설명이 전부 비어 있으면 스킵 |
 | 스킬 임베딩 | `skill.name + aliases` 를 임베딩. 200행 규모라 앱 시작 시 메모리 로드 | — | — |
-| 백필 | 누락·실패분을 매일 청소 (최대 500건/회) | — | `body_is_image=true`, `description IS NULL` 제외 |
+| 백필 | 누락·실패분 청소 (최대 500건/회). cron 없이 수동 실행 | — | `body_is_image=true`, `description IS NULL` 제외 |
 
 **배치 정책**: 청크 96개 단위로 임베딩 API 1회 호출. 태스크 1개당 API 1~2회.
 
@@ -352,11 +372,13 @@ FROM (...) GROUP BY source;
 
 | 시각 | 태스크 | 내용 | 재시도 |
 |---|---|---|---|
-| 04:00 | `crawl_dispatch` | 사이트×키워드 조합으로 `crawl_site` 팬아웃 | 1 |
-| — | `crawl_site` | 수집 → upsert → 변경분 `embed_postings` enqueue | 3 |
+| 08:30 | `crawl_dispatch` | 사이트×키워드 조합으로 `crawl_site` 팬아웃 | 1 |
+| — | `crawl_site` | 수집 → upsert 까지만. 임베딩은 큐잉하지 않는다 | 3 |
 | — | `embed_postings` | 청크 분할 → 배치 임베딩 → upsert | 3 |
-| 05:30 | `embed_backfill` | 누락·실패분 최대 500건 재처리 | 2 |
-| 06:00 | `embed_companies` | 기업 설명 변경분 임베딩 | 2 |
+| — | `embed_backfill` | 누락·실패분 최대 500건 재처리 | 2 |
+| — | `embed_companies` | 기업 설명 변경분 임베딩 | 2 |
+
+cron 은 `crawl_dispatch` 하나다. `embed_*` 는 functions 에만 등록돼 있고 수동으로 돌린다.
 
 **중복 방지**: `_job_id = f"crawl:{site}:{keyword}:{date}"` 형식으로 동일 작업 중복 큐잉 차단
 **동시성**: `max_jobs=4` (임베딩 API 호출 제한 고려)
@@ -364,18 +386,15 @@ FROM (...) GROUP BY source;
 
 ### 3-1. 수집 대상 설정
 
-`crawl_dispatch` 는 아래 설정으로 job 을 팬아웃한다. 총 **18개** job.
+`crawl_dispatch` 는 `crawler/config.py` 의 `iter_crawl_jobs()` 기본 설정으로 job 을 팬아웃한다. 총 **10개** job.
 
 ```python
-KEYWORDS = ["백엔드", "프론트엔드", "안드로이드", "iOS",
-            "데이터 엔지니어", "DevOps", "정보보안", "임베디드"]
-
-CRAWL_CONFIG = {
+config = {
     "jumpit":  {"pages": 40, "keywords": None},   # 개발 직군 전용 → 전체 순회
     "wanted":  {"pages": 30, "keywords": None},
-    "saramin": {"pages": 8,  "keywords": KEYWORDS},
-    # "jobkorea": 상세 요강이 별도 JS 엔드포인트. 스킬 추출 수율 15%로 보류.
-    #             sites/jobkorea.py 와 스냅샷 103건 보존. 엔드포인트 확인 시 pages 2로 재활성
+    "saramin": {"pages": 8,  "keywords": ["백엔드", "프론트엔드", "안드로이드", "iOS",
+                                          "데이터 엔지니어", "DevOps", "정보보안", "임베디드"]},
+    # 잡코리아는 보류라 제외 (DECISIONS.md 참고)
 }
 ```
 
@@ -389,7 +408,9 @@ CRAWL_CONFIG = {
 **목록 단계에서 걸러야 한다.** 상세를 받은 뒤 `content_hash` 를 비교하면 요청은 이미 나가 있어 절감 효과가 없다.
 
 ```python
-async def crawl_site(ctx, site, keyword, pages, skip_seen_days: int = 7):
+async def crawl_site(ctx, site, keyword, pages, skip_seen_days: Optional[int] = None):
+    if skip_seen_days is None:
+        skip_seen_days = settings.crawl_skip_seen_days   # 기본 7
     async with ctx["sessionmaker"]() as s:
         seen = await repo.recent_source_ids(s, site, days=skip_seen_days)
 
@@ -431,9 +452,8 @@ if found == 0:
 
 `crawl_dispatch` 는 enqueue 후 즉시 종료하므로 "오늘 수집 전체 완료" 시점을 알 수 없다. **의도적으로 추적하지 않는다.**
 
-- 임베딩은 각 `crawl_site` 가 개별로 트리거하므로 완료 시점을 알 필요가 없다
-- 05:30 `embed_backfill` 이 누락분을 청소해 결과적 정합성을 보장한다
-- 04:00 시작이 05:30까지 안 끝나는 경우는 다음날 백필이 처리한다
+- 수집은 upsert 까지만 하고 임베딩은 나중에 일괄로 돌리므로 완료 시점을 알 필요가 없다
+- 임베딩 대상은 `embed_hash` 로 고르므로 빠진 공고는 다음 일괄 실행에 잡힌다
 
 > `batch_id` + Redis 카운터로 완료를 감지하는 방식은 분산 카운터 관리가 붙어 복잡도 대비 이득이 없다. 규모가 커지면 재검토.
 

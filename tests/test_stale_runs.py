@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from app.core.database import get_worker_session
-from app.domains.market import enums, repository
+from app.domains.crawler import enums, repository
 
 MARK = "테스트-stale-run"
 

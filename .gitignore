@@ -65,3 +65,8 @@ market-csv-*.zip
 scripts/try_queries.py
 scripts/backfill_*.py
 scripts/embed_local/
+
+# 로컬 테스트용 DB 셋업. AI 서버는 테이블과 마이그레이션을 관리하지 않는다
+alembic/
+alembic.ini
+init.sql

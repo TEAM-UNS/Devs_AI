@@ -12,7 +12,7 @@
 cp .env.example .env      # 값 채우기
 docker compose up -d      # postgres(pgvector) + redis + arq worker
 uv sync
-uv run alembic upgrade head
+uv run alembic upgrade head   # 로컬 테스트 DB 만. alembic 은 저장소에 없다
 uv run uvicorn app.main:app --reload
 ```
 
@@ -30,7 +30,7 @@ uv run arq app.worker.WorkerSettings
 docker compose up -d --build worker
 ```
 
-스키마를 처음부터 다시 만들려면:
+로컬 테스트 DB 스키마를 처음부터 다시 만들려면:
 
 ```bash
 docker compose down -v && docker compose up -d
@@ -42,11 +42,11 @@ HNSW 인덱스는 **데이터를 넣은 뒤**에 만든다. 빈 테이블에 먼
 마다 그래프를 갱신하느라 초기 적재가 몇 배 느려진다.
 
 ```bash
-uv run alembic upgrade head                       # ① 스키마 (벡터 인덱스 없음)
+uv run alembic upgrade head                       # ① 스키마 (로컬 테스트 DB 만. 벡터 인덱스 없음)
 uv run python -m scripts.seed_skills              # ② 스킬 사전
 uv run python -m app.cli crawl --site jumpit --pages 40   # ③ 수집
-uv run python -m app.cli embed                    # ④ 임베딩
-uv run python -m app.cli vector-index --build     # ⑤ HNSW 인덱스
+uv run python -m scripts.embed_local.run --all    # ④ 임베딩 (bge-m3, 아래 "임베딩" 참고)
+uv run python -m app.cli vector-index             # ⑤ HNSW 인덱스
 ```
 
 인덱스가 없어도 벡터 검색은 순차 스캔으로 동작한다. ⑤ 를 잊어도 조용히
@@ -59,7 +59,7 @@ python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 --skip-seen
 python -m app.cli embed --limit 100           # 실제 임베딩 API 사용
 python -m app.cli embed --fake                # API 키 없이 파이프라인만 확인
 python -m app.cli embed --companies           # 기업 프로필 임베딩
-python -m app.cli vector-index --build        # 적재 후 HNSW 생성
+python -m app.cli vector-index               # 적재 후 HNSW 생성 (--drop 이면 삭제)
 ```
 
 **파서를 고친 뒤 백필** — `--force-reextract` 가 필요하다:
@@ -79,24 +79,27 @@ python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 \
 
 | 시각 | 태스크 | 내용 | 재시도 |
 |---|---|---|---|
-| 04:00 | `crawl_dispatch` | CRAWL_CONFIG 대로 `crawl_site` **10개** 팬아웃 | 1 |
-| — | `crawl_site` | 수집 → upsert → 변경분 `embed_postings` enqueue | 3 |
+| 08:30 | `crawl_dispatch` | `iter_crawl_jobs()` 기본 설정대로 `crawl_site` **10개** 팬아웃 | 1 |
+| — | `crawl_site` | 수집 → upsert 까지만. 임베딩은 큐잉하지 않는다 | 3 |
 | — | `embed_postings` | 청크 분할 → 배치 임베딩 → upsert | 3 |
-| 05:30 | `embed_backfill` | 누락·실패분 최대 `EMBED_BACKFILL_LIMIT` 건 | 2 |
-| 06:00 | `embed_companies` | 기업 설명 변경분 | 2 |
+| — | `embed_backfill` | 누락·실패분 최대 `EMBED_BACKFILL_LIMIT` 건 | 2 |
+| — | `embed_companies` | 기업 설명 변경분 | 2 |
+
+cron 은 `crawl_dispatch` 하나다. `embed_*` 는 functions 에만 등록돼 있고,
+임베딩은 나중에 수동으로 일괄 돌린다(아래 "임베딩").
 
 10개 = 점핏 1 + 원티드 1 + 사람인 8(키워드). 잡코리아는 스킬 수율 15% 라
 배치에서 빠져 있다(DECISIONS.md). 어댑터는 남아 있어 수동 실행·재파싱에는 쓴다.
 
 같은 날 같은 (사이트, 키워드) 는 `_job_id = crawl:{site}:{keyword}:{date}` 로
 중복 큐잉이 차단된다. "오늘 수집 전체 완료" 시점은 **의도적으로 추적하지
-않는다** — 05:30 백필이 누락분을 청소해 결과적 정합성을 보장한다.
+않는다** — 임베딩 대상은 `embed_hash` 로 고르므로 빠진 공고는 다음 일괄 실행에 잡힌다.
 
 ### 노트북에서 상시 운영하기
 
-새벽 4시에 노트북이 꺼져 있으면 그날 수집은 없던 일이 된다. 그래서:
+08:30 에 노트북이 꺼져 있으면 그날 수집은 없던 일이 된다. 그래서:
 
-- `cron(crawl_dispatch, hour=4, minute=0, run_at_startup=True)` — 기동 시 1회
+- `cron(crawl_dispatch, hour=8, minute=30, run_at_startup=True)` — 기동 시 1회
 - `keep_result = 86400` — **중복 차단이 여기 달려 있다.** arq 는 결과가
   만료되면 그 `_job_id` 를 처음 보는 것으로 취급한다. 기본값 3600 이면
   1시간 뒤 차단이 풀려서, 워커를 재시작할 때마다 같은 날 수집을 처음부터
@@ -111,10 +114,15 @@ crawl_dispatch: 0건 enqueue (중복 차단 10)
 
 ### 임베딩
 
-`gemini-embedding-2` · 1024차원 · 코사인. 키는 `GOOGLE_API_KEY` 로 챗봇과 공용이다.
+DB 의 벡터(청크·기업·스킬)와 질의 임베딩은 전부 `BAAI/bge-m3` · 1024차원 · 코사인.
+`LocalEmbedder`(`app/infra/embedding/adapters/local.py`)로 호스트에서
+`scripts/embed_local/run.py` 가 만든다 (`uv sync --group local`, 스크립트는 gitignore).
+gemini 벡터와 섞으면 차원이 같아 에러 없이 코사인만 깨진다.
 
-`EMBED_PROVIDER` 로 더미와 갈아끼운다. 분기는 `build_embedder()` 한 곳에만 있고,
-태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다.
+`build_embedder()` 는 `EMBED_PROVIDER` 로 gemini 와 더미 중에서 고른다. `app.cli embed` 와
+워커의 `embed_*` 태스크가 이걸 쓰고, bge-m3 는 여기에 없다. 분기는 이 한 곳에만 있고,
+태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다. gemini 키는
+`GOOGLE_API_KEY` 로 챗봇과 공용이다.
 
 | 값 | 구현 | 비고 |
 |---|---|---|
@@ -194,7 +202,6 @@ FROM market.posting_chunk;
 EMBED_RPM=0               # 0 이면 클라이언트 제한 없음
 EMBED_TPM=0
 EMBED_BACKFILL_LIMIT=500
-EMBED_ENQUEUE_CHUNK=0     # crawl_site → embed_postings 한 job 당 공고 수. 0=쪼개지 않음
 ```
 
 장치 자체는 남겨 뒀다. 429 가 보이기 시작하면 실측값을 넣으면 된다 — 어댑터가
@@ -247,37 +254,37 @@ if sys.platform == "win32":
 
 ```
 ai-service/
-├── docker-compose.yml   postgres(pgvector) + redis
-├── init.sql             extension · schema(market/chat) · 테이블 · 인덱스 · 롤
-├── alembic/             마이그레이션 (baseline 은 init.sql)
+├── docker-compose.yml   postgres(pgvector) + redis + arq worker
 ├── pyproject.toml       의존성
 ├── app/
 │   ├── main.py          FastAPI 조립
 │   ├── worker.py        arq WorkerSettings · cron
-│   ├── core/            설정 · DB · redis · 인증 · enums · 예외
-│   ├── llm/             port(Protocol) ← chat_adapter · embed_adapter · fake
+│   ├── cli.py           crawl · embed · reparse · vector-index · skills report
+│   ├── core/            설정 · DB · redis · 의존성 · 로깅 · CORS · 예외
+│   ├── infra/
+│   │   ├── embedding/   EmbedderPort ← gemini(api) · bge-m3(local) · fake
+│   │   └── llm/         build_chat_model() → Gemini 채팅 모델
 │   └── domains/
-│       ├── market/      데이터의 주인. models · repository(쓰기) · queries(읽기)
-│       ├── crawler/     수집·적재·임베딩만
-│       └── chat/        어시스턴트. graph · tools(13개)
+│       ├── crawler/     수집·적재·임베딩. market 스키마 models · repository · enums · seed_data
+│       ├── chat/        어시스턴트. queries(읽기) · graph · tools (서비스는 미구현)
+│       └── report/      주간 리포트 (빈 뼈대)
 └── tests/
 ```
 
 ## DB 메모
-나도 개발해야되서 걍 임시 DB 만들어둠.<br>
-백엔드쪽에서 DB 만들면 버릴 예정
+실제 DB 는 백엔드가 운영한다(같은 구조). 로컬 DB 와 `alembic/` · `alembic.ini` ·
+`init.sql` 은 테스트용이라 gitignore 로 저장소에서 뺐다. 운영 배포에서 alembic 은
+돌리지 않는다. `market.report` 테이블은 백엔드가 정의한다.
 
-- 운영 접속은 `ai_crawler`(market RW) / `ai_chat`(market RO + chat RW) 로 분리한다.
-  챗봇 쪽 롤은 market 에 쓰기 자체가 불가능하다.
-- 벡터 차원은 **1024 고정**. `.env` 의 `EMBED_DIM` 과 `init.sql` 의
+- 벡터 차원은 **1024 고정**. `.env` 의 `EMBED_DIM` 과 DB 의
   `vector(1024)` 가 어긋나면 INSERT 단계에서 터진다.
 - 벡터 인덱스는 HNSW(코사인). **마이그레이션이 만들지 않는다** —
-  DDL 은 `app/domains/market/vector_index.py` 에 있고 적재가 끝난 뒤
-  `app.cli vector-index --build` 로 세운다. 위 "초기 적재 순서" 참고.
-- LangGraph checkpointer 테이블은 앱 기동 시 `.setup()` 이 `chat` 스키마에
-  생성한다. alembic 관리 대상이 아니다.
-- 스키마 변경은 `models.py` → autogenerate → 리뷰 순서로 하고,
-  `init.sql` 도 같이 갱신한다. (`alembic/versions/README.md` 참고)
+  DDL 은 `app/cli.py` 의 `vector-index` 명령 안에 있고 적재가 끝난 뒤
+  `app.cli vector-index` 로 세운다. 위 "초기 적재 순서" 참고.
+- LangGraph checkpointer 테이블은 `chat` 스키마에 `.setup()` 으로 만든다.
+  챗봇 서비스가 아직 없어 기동 코드에는 없다.
+- 스키마 변경은 백엔드가 한다. 로컬 테스트 DB 는 `models.py` 를 맞춘 뒤
+  alembic 으로 따라간다.
 
 ## 메인 백엔드와 합의 필요
 

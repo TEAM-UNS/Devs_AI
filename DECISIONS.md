@@ -49,9 +49,10 @@ force_reextract 로 다시 쓴 건은 본문이 그대로이므로 임베딩 큐
 채운다. 중복은 _job_id(날짜) + keep_result 로 막는다.
 
 ## 잡코리아는 배치에서 제외, 어댑터는 보존 (프롬프트 5)
-CRAWL_CONFIG 10개 = 점핏 1 + 원티드 1 + 사람인 8. 스킬 수율 15% 인 공고를 매일
-수집하면 트렌드 집계의 분모만 늘어난다. SITE_CLASSES 에는 남겨 수동 실행·스냅샷
-재파싱에 쓴다. 엔드포인트를 찾으면 CRAWL_CONFIG 에 한 줄 추가하면 끝이다.
+수집 설정 10개 = 점핏 1 + 원티드 1 + 사람인 8. 스킬 수율 15% 인 공고를 매일
+수집하면 트렌드 집계의 분모만 늘어난다. crawler/config.py 의 build_crawler() 에는 남겨
+수동 실행·스냅샷 재파싱에 쓴다. 엔드포인트를 찾으면 iter_crawl_jobs() 기본 설정에
+한 줄 추가하면 끝이다.
 
 ## 증분 필터는 목록 단계에서 건다 (프롬프트 4)
 상세를 받은 뒤 content_hash 를 비교하면 요청이 이미 나가 있어 절감이 0이다.
@@ -67,11 +68,12 @@ crawl_site 진입 시 최근 7일 source_job_id 를 한 번 조회해 두고 목
 crawl_dispatch 는 enqueue 후 즉시 끝난다. batch_id + Redis 카운터로 완료를
 감지하는 구조는 분산 카운터 관리가 붙어 복잡도 대비 이득이 없다.
 05:30 embed_backfill 이 누락분을 청소해 결과적 정합성을 보장한다.
+(이후 수집과 임베딩을 분리하며 embed cron 은 없앴다. 임베딩은 수동 일괄 — README 배치 참고)
 
 ## HNSW 인덱스는 적재 후에 만든다 (프롬프트 4)
 빈 테이블에 먼저 걸면 INSERT 마다 그래프를 갱신해 초기 적재가 몇 배 느려진다.
 마이그레이션(4c1f9a7d2e08)이 baseline 의 인덱스를 떼어내고,
-DDL 은 market/vector_index.py 에 두어 `app.cli vector-index --build` 로 세운다.
+DDL 은 app/cli.py 의 vector-index 명령에 두어 `app.cli vector-index` 로 세운다.
 인덱스가 없어도 검색은 순차 스캔으로 동작한다 — 느릴 뿐 틀리지 않는다.
 
 ## 임베딩 레이트리밋은 클라이언트에서 먼저 지킨다 (프롬프트 4)
@@ -102,6 +104,8 @@ voyage 어댑터와 로컬(BGE-m3) 어댑터는 전환이 끝난 뒤 지웠다. 
 쓰지 않는 의존성(voyageai · sentence-transformers · torch)과, "제공자가 셋이라
 벡터 공간이 섞일 수 있다" 는 경고를 계속 관리해야 한다. 남은 분기는
 gemini / fake 둘뿐이고 레이트리밋·토큰 추정은 gemini 어댑터 안에 있다.
+(이후 뒤집혔다. gemini 키가 소진돼 로컬 bge-m3 어댑터를 app/infra/embedding/adapters/local.py 로
+다시 두고, DB 벡터와 질의 임베딩을 전부 bge-m3 로 통일했다)
 
 ★ 제공자를 바꾸면 embed_hash 만 비우는 것으로 부족하다. chunk_hash 는 본문
 내용으로 계산해 모델이 바뀌어도 그대로라, pending 이 비어 "재사용"으로 넘어가고

@@ -10,12 +10,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import get_settings
 from app.domains.crawler.chunker import Chunk, build_chunks, normalize
-from app.domains.market import repository
-from app.llm.embed.port import EmbedderPort
+from app.domains.crawler import repository
+from app.infra.embedding.port import EmbedderPort
+from typing import Optional, Union
 
 log = logging.getLogger(__name__)
-
-SessionFactory = Callable[[], AsyncSession] | async_sessionmaker[AsyncSession]
 
 
 def _call_count(embedder: EmbedderPort) -> int:
@@ -61,12 +60,12 @@ class _Work:
 
 
 async def embed_postings(
-    session_factory: SessionFactory,
+    session_factory: Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]],
     embedder: EmbedderPort,
     *,
-    posting_ids: Sequence[int] | None = None,
-    limit: int | None = None,
-    batch_size: int | None = None,
+    posting_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
+    batch_size: Optional[int] = None,
 ) -> EmbedStats:
     settings = get_settings()
     size = batch_size or settings.embed_batch_size
@@ -119,7 +118,7 @@ async def embed_postings(
 
 
 async def _flush(
-    session_factory: SessionFactory,
+    session_factory: Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]],
     embedder: EmbedderPort,
     batch: list[_Work],
     stats: EmbedStats,
@@ -186,7 +185,7 @@ async def _flush(
 
 
 def build_company_text(
-    description: str | None, business_content: str | None, industry: str | None
+    description: Optional[str], business_content: Optional[str], industry: Optional[str]
 ) -> str:
     parts = [normalize(p) for p in (description, business_content, industry) if p and p.strip()]
     return "\n".join(parts).strip()
@@ -197,12 +196,12 @@ def company_embed_hash(text: str) -> str:
 
 
 async def embed_companies(
-    session_factory: SessionFactory,
+    session_factory: Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]],
     embedder: EmbedderPort,
     *,
-    company_ids: Sequence[int] | None = None,
-    limit: int | None = None,
-    batch_size: int | None = None,
+    company_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
+    batch_size: Optional[int] = None,
 ) -> EmbedStats:
     settings = get_settings()
     size = batch_size or settings.embed_batch_size
@@ -262,10 +261,10 @@ def build_skill_text(name: str, aliases: Sequence[str]) -> str:
 
 
 async def embed_skills(
-    session_factory: SessionFactory,
+    session_factory: Union[Callable[[], AsyncSession], async_sessionmaker[AsyncSession]],
     embedder: EmbedderPort,
     *,
-    batch_size: int | None = None,
+    batch_size: Optional[int] = None,
 ) -> EmbedStats:
     size = batch_size or get_settings().embed_batch_size
     stats = EmbedStats()

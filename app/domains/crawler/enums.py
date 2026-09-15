@@ -1,4 +1,4 @@
-# market 도메인 Enum 과 상수
+# 공고 데이터 Enum
 
 from enum import StrEnum
 
@@ -74,16 +74,3 @@ class RunStatus(StrEnum):
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
-
-
-COMPANY_SIZE_BOUNDS: tuple[tuple[int, CompanySize], ...] = (
-    (1000, CompanySize.ENTERPRISE),
-    (300, CompanySize.LARGE),
-    (100, CompanySize.MEDIUM),
-    (30, CompanySize.SMALL),
-    (0, CompanySize.STARTUP),
-)
-
-
-def sql_in(column: str, enum_cls: type[StrEnum]) -> str:
-    return f"{column} IN (" + ", ".join(f"'{m.value}'" for m in enum_cls) + ")"

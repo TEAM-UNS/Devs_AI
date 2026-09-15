@@ -9,9 +9,10 @@ import time
 
 from sqlalchemy import text as sa_text
 
+from app.core.config import get_settings
+from app.core.logging import setup_logging
 from app.core.database import close_engine, get_worker_session, session_factory
 from app.domains.crawler import embed_service
-from app.domains.crawler.config import DEFAULT_SKIP_SEEN_DAYS
 from app.domains.crawler.service import (
     CrawlService,
     rebuild_bodies_from_snapshots,
@@ -22,28 +23,32 @@ from app.domains.crawler.sites.jobkorea import JobkoreaCrawler
 from app.domains.crawler.sites.jumpit import JumpitCrawler
 from app.domains.crawler.sites.saramin import SaraminCrawler
 from app.domains.crawler.sites.wanted import WantedCrawler
-from app.domains.market import repository, vector_index
-from app.llm.embed.embed_adapter import build_embedder
+from app.domains.crawler import repository
+from app.infra.embedding.factory import build_embedder
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
-SITES: dict[str, type[BaseSiteCrawler]] = {
-    "jumpit": JumpitCrawler,
-    "wanted": WantedCrawler,
-    "saramin": SaraminCrawler,
-}
-KEYWORD_SITES = {"saramin", "jobkorea"}
 
-DISABLED_SITES: dict[str, type[BaseSiteCrawler]] = {"jobkorea": JobkoreaCrawler}
+def _sites(include_disabled: bool = False) -> dict[str, type[BaseSiteCrawler]]:
+    sites: dict[str, type[BaseSiteCrawler]] = {
+        "jumpit": JumpitCrawler,
+        "wanted": WantedCrawler,
+        "saramin": SaraminCrawler,
+    }
+    if include_disabled:
+        sites["jobkorea"] = JobkoreaCrawler
+    return sites
 
 
-def _build_crawler(site: str, keyword: str | None = None) -> BaseSiteCrawler:
-    cls = SITES.get(site) or DISABLED_SITES.get(site)
+def _build_crawler(site: str, keyword: Optional[str] = None) -> BaseSiteCrawler:
+    enabled = _sites()
+    cls = _sites(include_disabled=True).get(site)
     if cls is None:
-        raise SystemExit(f"지원하지 않는 사이트: {site} (가능: {', '.join(SITES)})")
-    if site in DISABLED_SITES:
+        raise SystemExit(f"지원하지 않는 사이트: {site} (가능: {', '.join(enabled)})")
+    if site not in enabled:
         log.warning("%s 는 비활성 사이트입니다. 스냅샷 재파싱 용도로만 쓰세요.", site)
-    if site in KEYWORD_SITES and keyword:
+    if site in {"saramin", "jobkorea"} and keyword:
         return cls(keyword=keyword)
     return cls()
 
@@ -172,12 +177,25 @@ async def cmd_vector_index(args: argparse.Namespace) -> int:
     action = "DROP" if args.drop else "BUILD"
     print(f"\n=== HNSW 인덱스 {action} ===")
 
+    with_ = "WITH (m = 16, ef_construction = 64)"
+    indexes = (
+        (
+            "posting_chunk_embedding_idx",
+            "CREATE INDEX IF NOT EXISTS posting_chunk_embedding_idx "
+            f"ON market.posting_chunk USING hnsw (embedding vector_cosine_ops) {with_}",
+        ),
+        (
+            "company_profile_embedding_idx",
+            "CREATE INDEX IF NOT EXISTS company_profile_embedding_idx "
+            f"ON market.company USING hnsw (profile_embedding vector_cosine_ops) {with_}",
+        ),
+    )
+
     async with get_worker_session() as session:
         if not args.drop:
-            for setup in vector_index.BUILD_SESSION_SETUP:
-                await session.exec(sa_text(setup))
+            await session.exec(sa_text("SET max_parallel_maintenance_workers = 0"))
 
-        for name, ddl in vector_index.INDEXES:
+        for name, ddl in indexes:
             if args.drop:
                 print(f"  drop {name} …")
                 await session.exec(sa_text(f"DROP INDEX IF EXISTS market.{name}"))
@@ -270,20 +288,20 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli", description="채용 공고 크롤러")
     parser.add_argument("-v", "--verbose", action="store_true", help="디버그 로그")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_inspect = sub.add_parser("inspect", help="실제 응답을 저장하고 파싱 결과를 출력")
-    p_inspect.add_argument("--site", required=True, choices=sorted(SITES))
+    p_inspect.add_argument("--site", required=True, choices=sorted(_sites()))
     p_inspect.add_argument("--page", type=int, default=1)
     p_inspect.add_argument("--limit", type=int, default=2, help="상세를 확인할 공고 수")
     p_inspect.add_argument("--keyword", help="검색 키워드 (사람인·잡코리아)")
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_crawl = sub.add_parser("crawl", help="수집해서 DB 에 적재")
-    p_crawl.add_argument("--site", required=True, choices=sorted(SITES))
+    p_crawl.add_argument("--site", required=True, choices=sorted(_sites()))
     p_crawl.add_argument("--pages", type=int, default=1)
     p_crawl.add_argument("--no-detail", action="store_true", help="목록만 수집 (상세 생략)")
     p_crawl.add_argument("--keyword", help="검색 키워드 (사람인·잡코리아)")
@@ -291,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument(
         "--skip-seen-days",
         type=int,
-        default=DEFAULT_SKIP_SEEN_DAYS,
+        default=get_settings().crawl_skip_seen_days,
         help="최근 N일 내 수집한 공고는 목록에서 걸러 상세를 받지 않는다 (0=끄기)",
     )
     p_crawl.add_argument(
@@ -314,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_reparse = sub.add_parser("reparse", help="저장된 본문으로 스택만 다시 추출 (재수집 없음)")
     p_reparse.add_argument(
-        "--site", choices=sorted({*SITES, *DISABLED_SITES}), help="생략하면 전체"
+        "--site", choices=sorted(_sites(include_disabled=True)), help="생략하면 전체"
     )
     p_reparse.add_argument("--limit", type=int, help="상위 N건만")
     p_reparse.add_argument(
@@ -327,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     p_skills = sub.add_parser("skills", help="사전 관련 리포트")
     skills_sub = p_skills.add_subparsers(dest="skills_command", required=True)
     p_report = skills_sub.add_parser("report", help="사전 미매칭 태그 + 재현율")
-    p_report.add_argument("--site", choices=sorted(SITES), help="생략하면 전체")
+    p_report.add_argument("--site", choices=sorted(_sites()), help="생략하면 전체")
     p_report.add_argument("--top", type=int, default=20)
     p_report.add_argument(
         "--min-count", type=int, default=30, help="본문 스캔에서 이 횟수 미만은 버린다"
@@ -335,11 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     p_report.set_defaults(func=cmd_skills_report)
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging(logging.DEBUG if args.verbose else logging.INFO)
     return asyncio.run(args.func(args))
 
 

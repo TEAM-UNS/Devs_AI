@@ -18,7 +18,8 @@ from app.domains.crawler.sites.base import (
     ParseError,
     SelectorBrokenError,
 )
-from app.domains.market import enums, repository
+from app.domains.crawler import enums, repository
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -64,14 +65,14 @@ class ReparseStats:
         )
 
 
-async def _chunks_changed(session, posting_id: int, description: str | None) -> bool:
+async def _chunks_changed(session, posting_id: int, description: Optional[str]) -> bool:
     # content_hash 는 원문 기준이라 파서를 고쳐도 안 바뀐다. 그래서 청크로 비교한다
     stored = await repository.get_chunk_state(session, posting_id)
     current = {(c.section.value, c.seq): c.chunk_hash for c in build_chunks(description)}
     return stored != current
 
 
-async def reparse_skills(*, source: str | None = None, limit: int | None = None) -> ReparseStats:
+async def reparse_skills(*, source: Optional[str] = None, limit: Optional[int] = None) -> ReparseStats:
     stats = ReparseStats()
     stale: list[int] = []
 
@@ -174,7 +175,7 @@ class CrawlService:
         with_detail: bool = True,
         start_page: int = 1,
         skip_seen_days: int = 0,
-        keyword: str | None = None,
+        keyword: Optional[str] = None,
     ) -> CrawlStats:
         stats = CrawlStats()
 
@@ -380,7 +381,7 @@ class CrawlService:
         )
         return posting_id
 
-    async def _save_company(self, session, job: RawJob) -> int | None:
+    async def _save_company(self, session, job: RawJob) -> Optional[int]:
         if not job.company_name.strip():
             return None
 

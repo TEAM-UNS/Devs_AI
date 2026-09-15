@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.database import close_engine, get_worker_session
-from app.llm.embed.fake import FakeEmbedder
+from app.infra.embedding.adapters.fake import FakeEmbedder
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ from http import HTTPStatus
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.core.exception.errors import AppException
+from app.core.exception.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 

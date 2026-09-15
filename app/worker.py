@@ -7,6 +7,7 @@ from arq import cron
 from arq.worker import func
 
 from app.core.config import get_settings
+from app.core.logging import setup_logging
 from app.core.database import close_engine, engine, session_factory
 from app.core.redis import redis_settings
 from app.domains.crawler.tasks import (
@@ -16,18 +17,14 @@ from app.domains.crawler.tasks import (
     embed_companies,
     embed_postings,
 )
-from app.domains.market import repository
-from app.llm.embed.embed_adapter import build_embedder
+from app.domains.crawler import repository
+from app.infra.embedding.factory import build_embedder
 
 log = logging.getLogger(__name__)
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging()
     settings = get_settings()
 
     ctx["settings"] = settings

@@ -6,27 +6,26 @@ import struct
 from collections.abc import Sequence
 
 from app.core.config import get_settings
-
-Vector = list[float]
+from typing import Optional
 
 
 class FakeEmbedder:
-    def __init__(self, dim: int | None = None) -> None:
+    def __init__(self, dim: Optional[int] = None) -> None:
         self.dim = dim or get_settings().embed_dim
         self.call_count = 0
         self.embedded_texts: list[str] = []
 
-    async def embed_documents(self, texts: Sequence[str]) -> list[Vector]:
+    async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:
         self.call_count += 1
         self.embedded_texts.extend(texts)
         return [self._vector(t) for t in texts]
 
-    async def embed_query(self, text: str) -> Vector:
+    async def embed_query(self, text: str) -> list[float]:
         self.call_count += 1
         self.embedded_texts.append(text)
         return self._vector(text)
 
-    def _vector(self, text: str) -> Vector:
+    def _vector(self, text: str) -> list[float]:
         needed = self.dim * 4
         seed = text.encode("utf-8")
         buf = bytearray()

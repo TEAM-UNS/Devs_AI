@@ -14,19 +14,20 @@ from app.domains.crawler.extractor import (
     parse_salary,
     split_sections,
 )
-from app.domains.crawler.seed_data import SKILL_CATALOG
-from app.domains.market.enums import Requirement, SalaryPeriod, SalaryType, TechField
+from app.domains.crawler.seed_data import skill_catalog
+from app.domains.crawler.enums import Requirement, SalaryPeriod, SalaryType, TechField
+from typing import Optional
 
 matcher = SkillMatcher.from_catalog()
 
 
-def extract(description: str | None = None, tags: tuple[str, ...] = ()) -> dict[str, Requirement]:
+def extract(description: Optional[str] = None, tags: tuple[str, ...] = ()) -> dict[str, Requirement]:
     return {
         hit.name: hit.requirement for hit in matcher.extract(description=description, tags=tags)
     }
 
 
-def names(description: str | None = None, tags: tuple[str, ...] = ()) -> set[str]:
+def names(description: Optional[str] = None, tags: tuple[str, ...] = ()) -> set[str]:
     return set(extract(description, tags))
 
 
@@ -290,12 +291,12 @@ def test_lowercase_single_letters_are_not_matched():
 
 
 def test_common_tools_are_flagged():
-    flagged = {s.name for s in SKILL_CATALOG if s.is_common}
+    flagged = {s.name for s in skill_catalog() if s.is_common}
     assert flagged == {"Git", "Jira", "Slack", "Notion", "Confluence"}
 
 
 def test_figma_and_linux_are_not_common():
-    not_common = {s.name for s in SKILL_CATALOG if not s.is_common}
+    not_common = {s.name for s in skill_catalog() if not s.is_common}
     assert {"Figma", "Linux"} <= not_common
 
 
