@@ -1,5 +1,3 @@
-# 환경변수 설정
-
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -24,9 +22,10 @@ class Settings(BaseSettings):
     arq_max_jobs: int = 4
     arq_job_timeout: int = 600
 
-    cors_origins: str = ""
+    cors_origins: str
 
-    google_api_key: str = ""
+    google_api_key: str
+    typesafe_api_key: str
     embed_provider: Literal["auto", "gemini", "fake"] = "auto"
     gemini_embed_model: str
 

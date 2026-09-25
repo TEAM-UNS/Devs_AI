@@ -33,6 +33,7 @@ dependencies = [
     "ollama>=0.6.2",
     "google>=3.0.0",
     "langchain-google-genai>=4.4.0",
+    "logging>=0.4.9.6",
 ]
 
 [dependency-groups]

@@ -10,7 +10,7 @@ import time
 from sqlalchemy import text as sa_text
 
 from app.core.config import get_settings
-from app.core.logging import setup_logging
+from app.core.log import setup_logging
 from app.core.database import close_engine, get_worker_session, session_factory
 from app.domains.crawler import embed_service
 from app.domains.crawler.service import (

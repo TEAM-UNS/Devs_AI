@@ -1,5 +1,3 @@
-# arq 워커 설정과 cron 등록
-
 import logging
 from typing import Any, ClassVar
 
@@ -7,7 +5,7 @@ from arq import cron
 from arq.worker import func
 
 from app.core.config import get_settings
-from app.core.logging import setup_logging
+from app.core.log import setup_logging
 from app.core.database import close_engine, engine, session_factory
 from app.core.redis import redis_settings
 from app.domains.crawler.tasks import (
@@ -23,7 +21,7 @@ from app.infra.embedding.factory import build_embedder
 log = logging.getLogger(__name__)
 
 
-async def startup(ctx: dict[str, Any]) -> None:
+async def startup(ctx: dict[str, Any]):
     setup_logging()
     settings = get_settings()
 
@@ -49,7 +47,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         log.warning("이전 실행에서 마감되지 못한 crawl_run %d건을 failed 로 정리했습니다.", stale)
 
 
-async def shutdown(ctx: dict[str, Any]) -> None:
+async def shutdown(ctx: dict[str, Any]):
     await close_engine()
     log.info("worker 종료 — 커넥션 풀 정리 완료")
 
