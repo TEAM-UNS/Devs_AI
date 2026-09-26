@@ -1,8 +1,15 @@
-# 챗봇 쿼리 결과 DTO
+from pydantic import BaseModel, Field
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
+
+
+class StreamRequest(BaseModel):
+    message: str = Field(
+        min_length=1,
+        max_length=2000
+    )
 
 
 @dataclass(frozen=True)

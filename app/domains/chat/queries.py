@@ -1,5 +1,3 @@
-# 챗봇 툴이 쓰는 읽기 전용 쿼리
-
 import math
 from bisect import bisect_left
 from datetime import UTC, datetime, timedelta
