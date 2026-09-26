@@ -1,4 +1,4 @@
-# FastAPI 앱 진입점
+import logging
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,6 +11,11 @@ from app.core.exception.handlers import register_exception_handlers
 from app.core.middleware import register_middleware
 from app.core.redis import close_redis_pool, init_redis_pool
 from app.core.redis import ping as redis_ping
+
+from app.domains.chat.router import chat_router
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -26,6 +31,8 @@ app = FastAPI(title="jobstack-ai", lifespan=lifespan)
 
 register_exception_handlers(app)
 register_middleware(app)
+
+app.include_router(chat_router)
 
 
 @app.get("/health")
