@@ -1,5 +1,3 @@
-# 채팅 모델 선택
-
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 
