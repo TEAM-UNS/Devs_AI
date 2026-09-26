@@ -1,1 +1,9 @@
-# 툴 스펙과 핸들러 매핑
+from langchain_core.tools import BaseTool
+
+from app.domains.chat.tools.trend import get_popular_skills
+
+
+def chat_tools() -> list[BaseTool]:
+    return [
+        get_popular_skills,
+    ]
