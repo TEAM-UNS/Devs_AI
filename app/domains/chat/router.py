@@ -4,6 +4,7 @@ from sse_starlette import EventSourceResponse
 from app.domains.chat import service
 from app.domains.chat.schemas import StreamRequest
 
+
 chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 

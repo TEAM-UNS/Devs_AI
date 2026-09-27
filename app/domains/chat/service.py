@@ -14,6 +14,7 @@ from app.domains.chat.enums import StreamEvent
 from app.domains.chat.graph.build import build_graph
 from app.domains.chat.tools.context import ToolContext
 
+
 logger = logging.getLogger(__name__)
 
 
