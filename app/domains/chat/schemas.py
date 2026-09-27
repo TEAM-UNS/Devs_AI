@@ -6,11 +6,12 @@ from typing import Optional
 
 
 class StreamRequest(BaseModel):
+    user_id: int
     message: str = Field(
         min_length=1,
         max_length=2000
     )
-
+    session_id: Optional[int] = None
 
 @dataclass(frozen=True)
 class DataCoverage:
