@@ -8,7 +8,11 @@ from collections.abc import AsyncIterator
 
 from sse_starlette import ServerSentEvent
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import (
+    BaseMessage,
+    HumanMessage,
+    AIMessage,
+)
 
 from app.core.database import session_factory
 from app.domains.chat.exceptions import SessionNotFound
@@ -17,6 +21,7 @@ from app.domains.chat.enums import (
     MessageRole,
 )
 from app.domains.chat.repository import ChatRepository
+from app.domains.chat.models import ChatMessage
 from app.domains.chat.schemas import StreamRequest
 from app.domains.chat.graph.build import build_graph
 from app.domains.chat.tools.context import ToolContext
@@ -34,9 +39,22 @@ def _event(name: StreamEvent, payload: dict) -> ServerSentEvent:
         )
     )
 
+# 도구 호출 기록 일단 안 넣음. 나중에 비교 ㄱㄱ
+def _to_messages(rows: list[ChatMessage]) -> list[BaseMessage]:
+    messages: list[BaseMessage] = []
 
-async def open_session(request: StreamRequest) -> tuple[int, bool]:
+    for row in rows:
+        if row.role == MessageRole.USER:
+            messages.append(HumanMessage(row.content))
+        elif row.role == MessageRole.ASSISTANT:
+            messages.append(AIMessage(row.content))
+
+    return messages
+
+
+async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMessage]]:
     is_new = request.session_id is None
+    history: list[BaseMessage] = []
 
     async with session_factory() as db:
         repository = ChatRepository(db)
@@ -51,6 +69,9 @@ async def open_session(request: StreamRequest) -> tuple[int, bool]:
             if chat_session is None:
                 raise SessionNotFound(request.session_id)
 
+            row = await repository.recent_messages(request.session_id)
+            history = _to_messages(row)
+
         await repository.add_message(
             chat_session.id,
             MessageRole.USER,
@@ -59,7 +80,7 @@ async def open_session(request: StreamRequest) -> tuple[int, bool]:
 
         await db.commit()
 
-    return chat_session.id, is_new
+    return chat_session.id, is_new, history
 
 
 async def _save_answer(
@@ -83,7 +104,8 @@ async def _save_answer(
 async def stream(
     session_id,
     message: str,
-    is_new: bool
+    is_new: bool,
+    history: list[BaseMessage],
 ) -> AsyncIterator[ServerSentEvent]:
     answer: list[str] = []
     tools_used: list[str] = []
@@ -96,7 +118,7 @@ async def stream(
 
     try:
         async for mode, chunk in build_graph().astream(
-            {"messages": [HumanMessage(message)]},
+            {"messages": [*history, HumanMessage(message)]},
             context=ToolContext(session_factory=session_factory),
             stream_mode=["messages", "custom"],
         ):
@@ -151,11 +173,6 @@ async def stream(
             "recoverable": False,
         })
         return
-
-    logger.info(
-        "chat stream 완료 — 툴 %s",
-        tools_used or "없음"
-    )
 
     message_id = await _save_answer(session_id, answer)
 
