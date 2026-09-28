@@ -9,6 +9,7 @@ class MessageRole(StrEnum):
 
 
 class StreamEvent(StrEnum):
+    TITLE = "title"
     SESSION = "session"
     TOOL_START = "tool_start"
     GRAPH = "graph"
