@@ -2,7 +2,7 @@ import logging
 
 import json
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 
 from collections.abc import AsyncIterator
 
@@ -10,10 +10,12 @@ from sse_starlette import ServerSentEvent
 
 from langchain_core.messages import (
     BaseMessage,
+    SystemMessage,
     HumanMessage,
     AIMessage,
 )
 
+from app.infra.llm.client import build_chat_model
 from app.core.database import session_factory
 from app.domains.chat.exceptions import SessionNotFound
 from app.domains.chat.enums import (
@@ -21,23 +23,18 @@ from app.domains.chat.enums import (
     MessageRole,
 )
 from app.domains.chat.repository import ChatRepository
-from app.domains.chat.models import ChatMessage
+from app.domains.chat.models import (
+    ChatMessage,
+    ChatToolCall
+)
 from app.domains.chat.schemas import StreamRequest
 from app.domains.chat.graph.build import build_graph
+from app.domains.chat.graph.prompts import title_prompt
 from app.domains.chat.tools.context import ToolContext
 
 
 logger = logging.getLogger(__name__)
 
-
-def _event(name: StreamEvent, payload: dict) -> ServerSentEvent:
-    return ServerSentEvent(
-        event=name.value,
-        data=json.dumps(
-            payload,
-            ensure_ascii=False
-        )
-    )
 
 # 도구 호출 기록 일단 안 넣음. 나중에 비교 ㄱㄱ
 def _to_messages(rows: list[ChatMessage]) -> list[BaseMessage]:
@@ -85,20 +82,66 @@ async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMess
 
 async def _save_answer(
     session_id: int,
-    answer: list[str]
+    answer: list[str],
+    tool_calls: list[dict[str, Any]],
 ) -> Optional[int]:
     text = "".join(answer).strip()
     if not text:
         return None
 
     async with session_factory() as db:
-        message = await ChatRepository(db).add_message(
+        repository = ChatRepository(db)
+        message = await repository.add_message(
             session_id,
             MessageRole.ASSISTANT,
             text
         )
+
+        if tool_calls:
+            await repository.add_tool_calls(
+                [
+                    ChatToolCall(message_id=message.id, **call)
+                    for call in tool_calls
+                ]
+            )
         await db.commit()
         return message.id
+
+
+def _event(name: StreamEvent, payload: dict) -> ServerSentEvent:
+    return ServerSentEvent(
+        event=name.value,
+        data=json.dumps(
+            payload,
+            ensure_ascii=False
+        )
+    )
+
+
+async def _make_title(session_id: int, message: str) -> Optional[str]:
+    try:
+        response = await build_chat_model().ainvoke(
+            [
+                SystemMessage(title_prompt()),
+                HumanMessage(message)
+            ]
+        )
+        title = response.text.strip()[:200]
+        if not title:
+            return None
+
+        async with session_factory() as db:
+            await ChatRepository(db).update_title(session_id, title)
+            await db.commit()
+
+        return title
+
+    except Exception:
+        logger.exception(
+            "제목 생성 실패 — session %s",
+            session_id
+        )
+        return None
 
 
 async def stream(
@@ -108,8 +151,12 @@ async def stream(
     history: list[BaseMessage],
 ) -> AsyncIterator[ServerSentEvent]:
     answer: list[str] = []
-    tools_used: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
     graph_ids: list[str] = []
+
+    title_task = asyncio.create_task(
+        _make_title(session_id, message)
+    ) if is_new else None
 
     yield _event(
         StreamEvent.SESSION,
@@ -124,23 +171,32 @@ async def stream(
         ):
             if mode == "custom":
                 if chunk["type"] == "tool_start":
-                    tools_used.append(chunk["tool"])
+                    tool_calls.append(
+                        {
+                            "tool_name": chunk["tool"],
+                            "arguments": chunk["arguments"],
+                            "chart_payload": None,
+                        }
+                    )
                     yield _event(
                         StreamEvent.TOOL_START,
                         {
-                            "tool": chunk["tool"],
-                            "label": chunk["label"],
-                        })
+                                "tool": chunk["tool"],
+                                "label": chunk["label"],
+                            }
+                        )
 
                 elif chunk["type"] == "graph":
                     chart_id = f"g_{len(graph_ids) + 1:02d}"
                     graph_ids.append(chart_id)
-                    yield _event(
-                        StreamEvent.GRAPH,
-                        {
-                            "id": chart_id,
-                            **chunk["chart"]
-                        })
+                    chart = {"id": chart_id, **chunk["chart"]}
+
+                    for call in reversed(tool_calls):
+                        if call["tool_name"] == chunk["tool"] and call["chart_payload"] is None:
+                            call["chart_payload"] = chart
+                            break
+
+                    yield _event(StreamEvent.GRAPH, chart)
                 continue
 
             message_chunk, meta = chunk
@@ -174,7 +230,24 @@ async def stream(
         })
         return
 
-    message_id = await _save_answer(session_id, answer)
+    if title_task is not None:
+        title = await title_task
+        if title:
+            yield _event(
+                StreamEvent.TITLE,
+                {"title": title}
+            )
+
+    message_id = await _save_answer(
+        session_id,
+        answer,
+        tool_calls
+    )
+
+    tools_used = [
+        call["tool_name"]
+        for call in tool_calls
+    ]
 
     logger.info(
         "chat stream 완료 — 툴 %s",
