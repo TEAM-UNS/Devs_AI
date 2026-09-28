@@ -21,12 +21,21 @@ async def get_popular_skills(
     days: int = 30,
     top: int = 10
 ) -> dict[str, Any]:
+    arguments = {
+        "field": field.value if field else None,
+        "days": days,
+        "top": top,
+    }
+    
     writer = get_stream_writer()
-    writer({
-        "type": "tool_start",
-        "tool": "get_popular_skills",
-        "label": "기술 수요를 집계하고 있어요",
-    })
+    writer(
+        {
+            "type": "tool_start",
+            "tool": "get_popular_skills",
+            "label": "기술 수요를 집계하고 있어요",
+            "arguments": arguments,
+        }
+    )
 
     runtime = get_runtime(ToolContext)
     async with runtime.context.queries() as queries:
@@ -34,17 +43,17 @@ async def get_popular_skills(
             field=field, days=days, top=top
         )
 
-    writer({
-        "type": "graph",
-        "chart": bar_chart(
-            title=f"{field.value if field else '전체'} 직군에서 많이 요구되는 기술",
-            unit="공고 수",
-            rows=[
-                (item.skill, item.posting_count)
-                for item in result.items
-            ],
-        ),
-    })
+    writer(
+        {
+            "type": "graph",
+            "tool": "get_popular_skills",
+            "chart": bar_chart(
+                title=f"{field.value if field else '전체'} 직군에서 많이 요구되는 기술",
+                unit="공고 수",
+                rows=[(item.skill, item.posting_count) for item in result.items],
+            ),
+        }
+    )
 
     return {
         "analyzed_postings": result.analyzed_postings,
