@@ -6,11 +6,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.domains.chat.queries import ChatQueries
+from app.infra.embedding.port import EmbedderPort
 
 
 @dataclass
 class ToolContext:
     session_factory: async_sessionmaker[AsyncSession]
+    embedder: EmbedderPort
 
     @asynccontextmanager
     async def queries(self) -> AsyncIterator[ChatQueries]:

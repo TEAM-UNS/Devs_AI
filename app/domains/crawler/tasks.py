@@ -95,6 +95,9 @@ async def crawl_site(
 
     elapsed = (datetime.now(UTC) - started).total_seconds()
     log.info("crawl_site 완료: %s/%s — %s (%.1fs)", site, keyword, stats.as_line(), elapsed)
+
+    embedded = await _embed_crawled(ctx, site, stats.changed_posting_ids)
+
     return {
         "site": site,
         "keyword": keyword,
@@ -105,6 +108,39 @@ async def crawl_site(
         "skipped_known": stats.skipped_known,
         "errors": stats.errors,
         "elapsed_sec": round(elapsed, 1),
+        "embedded": embedded,
+    }
+
+
+# 수집한 자리에서 바로 임베딩한다. 실패해도 수집 결과는 남기고, 빠진 건 보충 스크립트가 채운다
+async def _embed_crawled(
+    ctx: dict[str, Any], site: str, posting_ids: list[int]
+) -> dict[str, Any]:
+    if not posting_ids:
+        return {"postings": 0, "companies": 0, "errors": 0}
+
+    try:
+        postings = await _run_embed(
+            ctx,
+            source=site,
+            runner=lambda factory, embedder: embed_service.embed_postings(
+                factory, embedder, posting_ids=posting_ids
+            ),
+        )
+        companies = await _run_embed(
+            ctx,
+            source="companies",
+            runner=lambda factory, embedder: embed_service.embed_companies(factory, embedder),
+        )
+    except Exception:
+        log.exception("수집 직후 임베딩 실패 — site=%s 공고 %d건", site, len(posting_ids))
+        return {"postings": 0, "companies": 0, "errors": len(posting_ids), "failed": True}
+
+    return {
+        "postings": postings["postings"],
+        "companies": companies["companies"],
+        "chunks_written": postings["chunks_written"],
+        "errors": postings["errors"] + companies["errors"],
     }
 
 

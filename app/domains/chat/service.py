@@ -16,6 +16,7 @@ from langchain_core.messages import (
 )
 
 from app.infra.llm.client import build_chat_model
+from app.infra.embedding.factory import build_embedder
 from app.core.database import session_factory
 from app.domains.chat.exceptions import SessionNotFound
 from app.domains.chat.enums import (
@@ -166,7 +167,10 @@ async def stream(
     try:
         async for mode, chunk in build_graph().astream(
             {"messages": [*history, HumanMessage(message)]},
-            context=ToolContext(session_factory=session_factory),
+            context=ToolContext(
+                session_factory=session_factory,
+                embedder=build_embedder()
+            ),
             stream_mode=["messages", "custom"],
         ):
             if mode == "custom":
