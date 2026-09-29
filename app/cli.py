@@ -1,5 +1,3 @@
-# 크롤링과 임베딩 CLI
-
 import argparse
 import asyncio
 import json

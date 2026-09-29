@@ -1,5 +1,3 @@
-# Gemini 임베딩 API 어댑터
-
 import asyncio
 import logging
 import math

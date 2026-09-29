@@ -1,5 +1,3 @@
-# 테스트용 가짜 임베더
-
 import hashlib
 import math
 import struct
