@@ -44,9 +44,15 @@ HNSW 인덱스는 **데이터를 넣은 뒤**에 만든다. 빈 테이블에 먼
 ```bash
 uv run alembic upgrade head                       # ① 스키마 (로컬 테스트 DB 만. 벡터 인덱스 없음)
 uv run python -m scripts.seed_skills              # ② 스킬 사전
-uv run python -m app.cli crawl --site jumpit --pages 40   # ③ 수집
-uv run python -m scripts.embed_local.run --all    # ④ 임베딩 (bge-m3, 아래 "임베딩" 참고)
+uv run python -m app.cli crawl --site jumpit --pages 40   # ③ 수집 (CLI 는 임베딩까지 하지 않는다)
+uv run python -m scripts.embed_local.run --all    # ④ 임베딩 (아래 "임베딩" 참고)
 uv run python -m app.cli vector-index             # ⑤ HNSW 인덱스
+```
+
+워커로 돌리면 ③·④ 가 한 번에 끝난다. `crawl_site` 가 수집한 자리에서 바로 임베딩한다.
+
+```bash
+caffeinate -is uv run arq app.worker.WorkerSettings
 ```
 
 인덱스가 없어도 벡터 검색은 순차 스캔으로 동작한다. ⑤ 를 잊어도 조용히
@@ -80,13 +86,14 @@ python -m app.cli crawl --site saramin --keyword 백엔드 --pages 8 \
 | 시각 | 태스크 | 내용 | 재시도 |
 |---|---|---|---|
 | 08:30 | `crawl_dispatch` | `iter_crawl_jobs()` 기본 설정대로 `crawl_site` **10개** 팬아웃 | 1 |
-| — | `crawl_site` | 수집 → upsert 까지만. 임베딩은 큐잉하지 않는다 | 3 |
+| — | `crawl_site` | 수집 → upsert → **그 자리에서 임베딩**(바뀐 공고 + 기업) | 3 |
 | — | `embed_postings` | 청크 분할 → 배치 임베딩 → upsert | 3 |
 | — | `embed_backfill` | 누락·실패분 최대 `EMBED_BACKFILL_LIMIT` 건 | 2 |
 | — | `embed_companies` | 기업 설명 변경분 | 2 |
 
-cron 은 `crawl_dispatch` 하나다. `embed_*` 는 functions 에만 등록돼 있고,
-임베딩은 나중에 수동으로 일괄 돌린다(아래 "임베딩").
+cron 은 `crawl_dispatch` 하나다. 임베딩은 `crawl_site` 안에서 같이 끝나고,
+`embed_*` 는 수동 보충용으로만 남겨 둔다. 임베딩이 실패해도 수집 결과는 남고,
+빠진 공고는 `embed_hash` 로 다시 잡히니 보충 스크립트가 채운다.
 
 10개 = 점핏 1 + 원티드 1 + 사람인 8(키워드). 잡코리아는 스킬 수율 15% 라
 배치에서 빠져 있다(DECISIONS.md). 어댑터는 남아 있어 수동 실행·재파싱에는 쓴다.
@@ -114,20 +121,18 @@ crawl_dispatch: 0건 enqueue (중복 차단 10)
 
 ### 임베딩
 
-DB 의 벡터(청크·기업·스킬)와 질의 임베딩은 전부 `BAAI/bge-m3` · 1024차원 · 코사인.
-`LocalEmbedder`(`app/infra/embedding/adapters/local.py`)로 호스트에서
-`scripts/embed_local/run.py` 가 만든다 (`uv sync --group local`, 스크립트는 gitignore).
-gemini 벡터와 섞으면 차원이 같아 에러 없이 코사인만 깨진다.
+DB 의 벡터(청크·기업·스킬)와 질의 임베딩은 전부 `bge-m3` · 1024차원 · 코사인.
+로컬 올라마(`http://localhost:11434`)가 만든다. 올라마의 bge-m3(F16)로 다시 임베딩해
+저장된 벡터와 코사인 1.0000 으로 일치하는 것을 확인했다. 모델이 올라와 있으면 한 건에 0.1초,
+내려가 있으면 첫 호출만 2초 걸린다(올라마는 5분 유휴 후 모델을 내린다).
 
-`build_embedder()` 는 `EMBED_PROVIDER` 로 gemini 와 더미 중에서 고른다. `app.cli embed` 와
-워커의 `embed_*` 태스크가 이걸 쓰고, bge-m3 는 여기에 없다. 분기는 이 한 곳에만 있고,
-태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다. gemini 키는
-`GOOGLE_API_KEY` 로 챗봇과 공용이다.
+`build_embedder()` 는 `EMBED_PROVIDER` 로 고르고, 분기는 이 한 곳에만 있다.
+태스크·툴은 `EmbedderPort` 만 보므로 호출부는 손댈 필요가 없다.
 
 | 값 | 구현 | 비고 |
 |---|---|---|
-| `auto` | 키 있으면 Gemini, 없으면 Fake | 기본값 |
-| `gemini` | `GeminiEmbedder` | 키 필수. 없으면 기동 시 터진다 |
+| `ollama` | `OllamaEmbedder` | 기본값. 올라마가 떠 있어야 한다 |
+| `gemini` | `GeminiEmbedder` | 키 필수. **DB 벡터와 섞이면 코사인이 조용히 깨진다** |
 | `fake` | `FakeEmbedder` | 해시 기반 더미 벡터. 키 불필요 |
 
 `gemini` 를 **명시**했는데 키가 없으면 Fake 로 떨어지지 않고 `UpstreamError` 를

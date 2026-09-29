@@ -26,8 +26,11 @@ class Settings(BaseSettings):
 
     google_api_key: str
     typesafe_api_key: str
-    embed_provider: Literal["auto", "gemini", "fake"] = "auto"
     gemini_embed_model: str
+
+    embed_provider: Literal["ollama", "gemini", "fake"] = "ollama"
+    ollama_host: str
+    embed_ollama_model: str
 
     gemini_model: str
     llm_max_retry: int = 3

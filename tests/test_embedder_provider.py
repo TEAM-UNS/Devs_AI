@@ -9,6 +9,7 @@ from app.infra.embedding.factory import build_embedder
 from app.core.exception.exceptions import UpstreamError
 from app.infra.embedding.adapters.fake import FakeEmbedder
 from app.infra.embedding.adapters.api import GeminiEmbedder
+from app.infra.embedding.adapters.ollama_local import OllamaEmbedder
 
 
 @pytest.fixture(autouse=True)
@@ -45,17 +46,17 @@ def test_gemini_without_key_fails_loudly(env) -> None:
         build_embedder()
 
 
-def test_auto_uses_gemini_when_key_present(env) -> None:
-    env(EMBED_PROVIDER="auto", GOOGLE_API_KEY="test-key")
-    assert isinstance(build_embedder(), GeminiEmbedder)
+def test_ollama_selects_ollama_embedder(env) -> None:
+    env(EMBED_PROVIDER="ollama")
+    assert isinstance(build_embedder(), OllamaEmbedder)
 
 
-def test_auto_falls_back_to_fake_without_key(env) -> None:
-    env(EMBED_PROVIDER="auto", GOOGLE_API_KEY="")
-    assert isinstance(build_embedder(), FakeEmbedder)
+def test_ollama_needs_no_google_key(env) -> None:
+    env(EMBED_PROVIDER="ollama", GOOGLE_API_KEY="")
+    assert isinstance(build_embedder(), OllamaEmbedder)
 
 
-@pytest.mark.parametrize("provider", ["auto", "gemini", "fake"])
+@pytest.mark.parametrize("provider", ["ollama", "gemini", "fake"])
 def test_force_fake_overrides_provider(env, provider: str) -> None:
     env(EMBED_PROVIDER=provider)
     assert isinstance(build_embedder(force_fake=True), FakeEmbedder)

@@ -107,6 +107,18 @@ gemini / fake 둘뿐이고 레이트리밋·토큰 추정은 gemini 어댑터 �
 (이후 뒤집혔다. gemini 키가 소진돼 로컬 bge-m3 어댑터를 app/infra/embedding/adapters/local.py 로
 다시 두고, DB 벡터와 질의 임베딩을 전부 bge-m3 로 통일했다)
 
+## bge-m3 는 sentence-transformers 가 아니라 올라마로 (2026-09-29)
+
+로컬 어댑터(local.py, sentence-transformers + torch)를 지우고 올라마 HTTP 호출
+(OllamaEmbedder)로 바꿨다. 올라마 bge-m3(F16)로 다시 임베딩해 DB 에 저장된 벡터와
+코사인 1.0000 으로 일치하는 것을 확인했고, 모델이 올라와 있으면 한 건에 0.1초다.
+이러면 이미지에 torch(수 GB)를 넣을 필요가 없고 워커·API 가 같은 어댑터를 쓴다.
+EMBED_PROVIDER 의 auto 는 없앴다 — "키 있으면 gemini" 가 벡터 공간을 조용히
+섞을 수 있는 기본값이었다. 지금 값은 ollama(기본) · gemini · fake 셋이다.
+
+임베딩 시점도 옮겼다. crawl_site 가 수집한 자리에서 바뀐 공고와 기업을 바로
+임베딩한다. embed_* 태스크와 scripts/embed_local/run.py 는 실패·누락 보충용으로만 남는다.
+
 ★ 제공자를 바꾸면 embed_hash 만 비우는 것으로 부족하다. chunk_hash 는 본문
 내용으로 계산해 모델이 바뀌어도 그대로라, pending 이 비어 "재사용"으로 넘어가고
 옛 벡터가 남는다. posting_chunk 행을 지워야 재임베딩이 일어난다.

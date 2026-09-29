@@ -33,10 +33,10 @@ ai-service/
 │   ├── infra/                      ══ 외부 API ══
 │   │   ├── embedding/
 │   │   │   ├── port.py             EmbedderPort (Protocol)
-│   │   │   ├── factory.py          build_embedder() — EMBED_PROVIDER 로 gemini/fake 선택
+│   │   │   ├── factory.py          build_embedder() — EMBED_PROVIDER 로 ollama/gemini/fake 선택
 │   │   │   └── adapters/
 │   │   │       ├── api.py          GeminiEmbedder
-│   │   │       ├── local.py        LocalEmbedder (bge-m3)
+│   │   │       ├── ollama_local.py OllamaEmbedder (bge-m3, 기본값)
 │   │   │       └── fake.py         테스트용 (API 키 불필요)
 │   │   └── llm/
 │   │       └── client.py           build_chat_model() → ChatGoogleGenerativeAI (Gemini)

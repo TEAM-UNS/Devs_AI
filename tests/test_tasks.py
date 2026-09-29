@@ -130,10 +130,35 @@ def _settings_cache():
     get_settings.cache_clear()
 
 
-async def test_crawl_site_does_not_enqueue_embedding(_patch_crawl) -> None:
+@pytest.fixture
+def _record_embed(monkeypatch):
+    sources: list[str] = []
+
+    async def fake_run_embed(ctx: Any, *, source: str, runner: Any) -> dict[str, Any]:
+        sources.append(source)
+        return {"postings": 3, "companies": 1, "chunks_written": 9, "errors": 0}
+
+    monkeypatch.setattr(tasks, "_run_embed", fake_run_embed)
+    return sources
+
+
+async def test_crawl_site_embeds_in_place(_patch_crawl, _record_embed) -> None:
     _StubService.stats = _Stats([11, 22, 33])
     redis = FakeRedis()
 
-    await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
+    result = await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
 
+    # 큐에 넘기지 않고 그 자리에서 임베딩한다
     assert redis.calls == []
+    assert _record_embed == ["jumpit", "companies"]
+    assert result["embedded"]["postings"] == 3
+
+
+async def test_crawl_site_without_changes_skips_embedding(_patch_crawl, _record_embed) -> None:
+    _StubService.stats = _Stats([])
+    redis = FakeRedis()
+
+    result = await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
+
+    assert _record_embed == []
+    assert result["embedded"] == {"postings": 0, "companies": 0, "errors": 0}
