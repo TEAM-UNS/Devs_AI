@@ -117,7 +117,8 @@ EMBED_PROVIDER 의 auto 는 없앴다 — "키 있으면 gemini" 가 벡터 공�
 섞을 수 있는 기본값이었다. 지금 값은 ollama(기본) · gemini · fake 셋이다.
 
 임베딩 시점도 옮겼다. crawl_site 가 수집한 자리에서 바뀐 공고와 기업을 바로
-임베딩한다. embed_* 태스크와 scripts/embed_local/run.py 는 실패·누락 보충용으로만 남는다.
+임베딩한다. 보충은 워커의 embed_* 태스크와 `app.cli embed`(--companies · --skills · --ids)로 한다.
+scripts/embed_local/ 은 CLI 와 기능이 겹쳐 지웠다.
 
 ★ 제공자를 바꾸면 embed_hash 만 비우는 것으로 부족하다. chunk_hash 는 본문
 내용으로 계산해 모델이 바뀌어도 그대로라, pending 이 비어 "재사용"으로 넘어가고

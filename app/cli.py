@@ -142,7 +142,9 @@ async def cmd_embed(args: argparse.Namespace) -> int:
 
     print(f"\n=== 임베딩 시작 (embedder={type(embedder).__name__}) ===")
 
-    if args.companies:
+    if args.skills:
+        stats = await embed_service.embed_skills(factory, embedder)
+    elif args.companies:
         stats = await embed_service.embed_companies(factory, embedder, limit=args.limit)
     else:
         ids = [int(v) for v in args.ids] if args.ids else None
@@ -152,6 +154,7 @@ async def cmd_embed(args: argparse.Namespace) -> int:
 
     print(f"  {stats.as_line()}")
     print(f"  기업          : {stats.companies}")
+    print(f"  스킬          : {stats.skills}")
     print(f"  소요          : {time.monotonic() - started:.1f}초")
     if stats.error_messages:
         print("  오류:")
@@ -238,7 +241,7 @@ async def cmd_reparse(args: argparse.Namespace) -> int:
     if stats.reembed_queued:
         print(
             f"\n  청크가 달라진 {stats.reembed_queued}건을 재임베딩 대상으로 되돌렸습니다.\n"
-            f"  다음: uv run python -m scripts.embed_local.run"
+            f"  다음: uv run python -m app.cli embed"
         )
 
     await close_engine()
@@ -321,6 +324,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_embed.add_argument("--limit", type=int, help="상위 N건만 (생략 시 전량)")
     p_embed.add_argument("--ids", nargs="+", help="특정 posting_id 만")
     p_embed.add_argument("--companies", action="store_true", help="기업 프로필 임베딩")
+    p_embed.add_argument("--skills", action="store_true", help="스킬 사전 임베딩 (매번 전량)")
     p_embed.add_argument("--fake", action="store_true", help="FakeEmbedder 사용 (API 키 불필요)")
     p_embed.set_defaults(func=cmd_embed)
 

@@ -45,7 +45,7 @@ HNSW 인덱스는 **데이터를 넣은 뒤**에 만든다. 빈 테이블에 먼
 uv run alembic upgrade head                       # ① 스키마 (로컬 테스트 DB 만. 벡터 인덱스 없음)
 uv run python -m scripts.seed_skills              # ② 스킬 사전
 uv run python -m app.cli crawl --site jumpit --pages 40   # ③ 수집 (CLI 는 임베딩까지 하지 않는다)
-uv run python -m scripts.embed_local.run --all    # ④ 임베딩 (아래 "임베딩" 참고)
+uv run python -m app.cli embed                    # ④ 임베딩 (--companies · --skills 도 각각)
 uv run python -m app.cli vector-index             # ⑤ HNSW 인덱스
 ```
 
