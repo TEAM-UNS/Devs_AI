@@ -28,25 +28,12 @@ def iter_crawl_jobs(config: Optional[dict[str, dict[str, object]]] = None) -> li
         #   실측 2026-10-02 (목록 1페이지씩 찍어 확인)
         #     점핏   p50 에서 7건(부분) · p60 0건  → 총 791건
         #     원티드 p100 까지 20건씩 · p150 0건   → API 가 총계를 주지 않아 범위로만 안다
-        #     사람인 p40 까지 페이지당 신규 17~29건. 검색이 느슨해 깊이 들어가면
-        #            관련도가 떨어진다(개발 분야 분류율 p8 40/40 · p32 30/40 · p56 29/40).
-        #            30페이지까지만 — 그 이상은 트렌드 집계의 분모만 늘린다
+        #     사람인 분류 목록 cat_mcls=2(IT개발·데이터) 11,154건 / 50건씩 → 224페이지.
+        #            검색 키워드 8개 방식은 직무 28종 중 4종만 닿았다(사각지대 12,419건)
         config = {
             "jumpit": {"pages": 60, "keywords": None},
             "wanted": {"pages": 150, "keywords": None},
-            "saramin": {
-                "pages": 30,
-                "keywords": [
-                    "백엔드",
-                    "프론트엔드",
-                    "안드로이드",
-                    "iOS",
-                    "데이터 엔지니어",
-                    "DevOps",
-                    "정보보안",
-                    "임베디드",
-                ],
-            },
+            "saramin": {"pages": 240, "keywords": None},
             # 잡코리아는 보류라 제외 (DECISIONS.md 참고)
         }
     jobs: list[CrawlJob] = []
@@ -71,6 +58,7 @@ def build_crawler(site: str, keyword: Optional[str] = None, **kwargs: object) ->
     cls = site_classes.get(site)
     if cls is None:
         raise ValueError(f"지원하지 않는 사이트: {site} (가능: {', '.join(site_classes)})")
-    if site in {"saramin", "jobkorea"} and keyword:
+    # 잡코리아만 검색어를 쓴다. 사람인은 분류 목록으로 바뀌어 키워드가 없다.
+    if site == "jobkorea" and keyword:
         return cls(keyword=keyword, **kwargs)  # type: ignore[arg-type]
     return cls(**kwargs)  # type: ignore[arg-type]

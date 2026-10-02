@@ -46,7 +46,7 @@ def _build_crawler(site: str, keyword: Optional[str] = None) -> BaseSiteCrawler:
         raise SystemExit(f"지원하지 않는 사이트: {site} (가능: {', '.join(enabled)})")
     if site not in enabled:
         log.warning("%s 는 비활성 사이트입니다. 스냅샷 재파싱 용도로만 쓰세요.", site)
-    if site in {"saramin", "jobkorea"} and keyword:
+    if site == "jobkorea" and keyword:
         return cls(keyword=keyword)
     return cls()
 

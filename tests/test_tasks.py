@@ -26,16 +26,17 @@ class FakeRedis:
         return object()
 
 
-def test_config_expands_to_10_jobs() -> None:
+def test_config_expands_to_one_job_per_site() -> None:
     jobs = iter_crawl_jobs()
-    assert len(jobs) == 10
+    assert len(jobs) == 3
 
     by_site: dict[str, int] = {}
     for job in jobs:
         by_site[job.site] = by_site.get(job.site, 0) + 1
 
-    assert by_site == {"jumpit": 1, "wanted": 1, "saramin": 8}
-    assert len({job.keyword for job in jobs if job.site == "saramin"}) == 8
+    # 사람인도 분류 목록으로 바뀌어 키워드 팬아웃이 없다 (사이트당 1건)
+    assert by_site == {"jumpit": 1, "wanted": 1, "saramin": 1}
+    assert all(job.keyword is None for job in jobs)
 
 
 def test_jobkorea_is_out_of_the_batch_but_still_buildable(tmp_path) -> None:
@@ -55,11 +56,11 @@ async def test_dispatch_fans_out_with_dedup_job_ids() -> None:
 
     result = await tasks.crawl_dispatch({"redis": redis})
 
-    assert result == {"enqueued": 10, "duplicated": 0}
+    assert result == {"enqueued": 3, "duplicated": 0}
     assert {name for name, _, _ in redis.calls} == {"crawl_site"}
 
     job_ids = [job_id for _, _, job_id in redis.calls]
-    assert len(set(job_ids)) == 10
+    assert len(set(job_ids)) == 3
     assert all(job_id.startswith("crawl:") for job_id in job_ids)
     assert all(job_id.split(":")[-1].isdigit() for job_id in job_ids)
     assert "crawl:jumpit:all:" in next(j for j in job_ids if j.startswith("crawl:jumpit"))
@@ -71,8 +72,8 @@ async def test_dispatch_twice_is_blocked_by_job_id() -> None:
     await tasks.crawl_dispatch({"redis": redis})
     second = await tasks.crawl_dispatch({"redis": redis})
 
-    assert second == {"enqueued": 0, "duplicated": 10}
-    assert len(redis.calls) == 10
+    assert second == {"enqueued": 0, "duplicated": 3}
+    assert len(redis.calls) == 3
 
 
 async def test_dispatch_passes_skip_seen_days() -> None:
@@ -83,7 +84,7 @@ async def test_dispatch_passes_skip_seen_days() -> None:
         site, _keyword, pages, skip_seen_days = args
         assert skip_seen_days == 7
         # 목록이 실제로 끝나는 지점 기준 (crawler/config.py 주석에 실측 근거)
-        assert pages == {"jumpit": 60, "wanted": 150, "saramin": 30}[site]
+        assert pages == {"jumpit": 60, "wanted": 150, "saramin": 240}[site]
 
 
 class _Stats:
