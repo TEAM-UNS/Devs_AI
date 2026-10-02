@@ -47,7 +47,7 @@ def test_keywordless_sites_get_no_keyword() -> None:
     jobs = {j.site: j for j in iter_crawl_jobs() if j.site in {"jumpit", "wanted"}}
     assert jobs["jumpit"].keyword is None
     assert jobs["wanted"].keyword is None
-    assert jobs["jumpit"].pages == 40
+    assert jobs["jumpit"].pages == 60
 
 
 async def test_dispatch_fans_out_with_dedup_job_ids() -> None:
@@ -82,7 +82,8 @@ async def test_dispatch_passes_skip_seen_days() -> None:
     for _, args, _ in redis.calls:
         site, _keyword, pages, skip_seen_days = args
         assert skip_seen_days == 7
-        assert pages == {"jumpit": 40, "wanted": 30, "saramin": 8}[site]
+        # 목록이 실제로 끝나는 지점 기준 (crawler/config.py 주석에 실측 근거)
+        assert pages == {"jumpit": 60, "wanted": 150, "saramin": 30}[site]
 
 
 class _Stats:
