@@ -62,7 +62,10 @@ from app.domains.chat.schemas import (
 
 
 class ChatQueries:
-    APPEARED_AT = func.coalesce(JobPosting.posted_at, JobPosting.created_at)
+    # ★ coalesce 로 수집일을 끼워 넣지 않는다. 등록일이 없는 공고를 있는 것처럼
+    #   기간 집계에 넣으면 숫자는 나오는데 틀렸다는 걸 아무도 모른다.
+    #   posted_at 이 NULL 이면 기간 필터에서 자연히 빠진다 (NULL 비교는 거짓).
+    APPEARED_AT = JobPosting.posted_at
 
     _DEMAND = (Requirement.TAG, Requirement.REQUIRED, Requirement.PREFERRED)
 

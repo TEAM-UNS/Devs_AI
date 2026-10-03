@@ -164,6 +164,12 @@ async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStat
 
 
 class CrawlService:
+    # ★ 목록이 최신순이므로, "이미 가진 공고만 나오는 페이지" 가 연달아 나오면
+    #   그 뒤는 전부 과거이고 이미 수집한 것이다. 거기서 멈춘다.
+    #   1페이지로 끊지 않는 이유: 고정 노출·광고가 섞여 한 페이지가 우연히
+    #   전부 기수집일 수 있다. 2페이지 연속이면 그럴 확률이 낮다.
+    STOP_AFTER_KNOWN_PAGES = 2
+
     def __init__(self, crawler: BaseSiteCrawler, *, force_reextract: bool = False) -> None:
         self.crawler = crawler
         self.force_reextract = force_reextract
@@ -191,6 +197,8 @@ class CrawlService:
             seen = await repository.recent_source_ids(
                 session, self.crawler.source, days=skip_seen_days
             )
+            # 중단 판단용. seen(7일) 과 쓰임이 다르다 — repository 주석 참고
+            collected = await repository.all_source_ids(session, self.crawler.source)
         if seen:
             log.info(
                 "%s: 최근 %d일 내 수집 %d건 — 목록에서 걸러 상세 요청을 생략합니다.",
@@ -199,6 +207,7 @@ class CrawlService:
                 len(seen),
             )
 
+        known_pages = 0
         try:
             for page in range(start_page, start_page + pages):
                 try:
@@ -226,26 +235,39 @@ class CrawlService:
                     log.info("%s: page %d 가 비어 있어 종료합니다.", self.crawler.source, page)
                     break
 
+                # 이 페이지가 통째로 "이미 가진 공고" 인가 (중단 판단)
+                if all(job.source_job_id in collected for job in jobs):
+                    known_pages += 1
+                else:
+                    known_pages = 0
+
                 fresh = [job for job in jobs if job.source_job_id not in seen]
                 known = len(jobs) - len(fresh)
                 if known:
                     stats.skipped_known += known
                     stats.skipped += known
                     stats.fetched += known
-                if not fresh:
+                if fresh:
+                    if with_detail:
+                        fresh = await self._fetch_details(fresh, stats)
+                    await self._persist(fresh, field_ids, matcher, stats)
+                    log.info("%s: page %d 완료 — %s", self.crawler.source, page, stats.as_line())
+                else:
                     log.info(
                         "%s: page %d 전부 기수집(%d건) — 상세 생략",
                         self.crawler.source,
                         page,
                         known,
                     )
-                    continue
 
-                if with_detail:
-                    fresh = await self._fetch_details(fresh, stats)
-
-                await self._persist(fresh, field_ids, matcher, stats)
-                log.info("%s: page %d 완료 — %s", self.crawler.source, page, stats.as_line())
+                if known_pages >= self.STOP_AFTER_KNOWN_PAGES:
+                    log.info(
+                        "%s: 이미 가진 공고만 %d페이지 연속 — page %d 에서 종료합니다.",
+                        self.crawler.source,
+                        known_pages,
+                        page,
+                    )
+                    break
 
         except Exception as exc:
             stats.errors += 1

@@ -95,6 +95,12 @@ class SaraminCrawler(BaseSiteCrawler):
                 "searchType": "search",
                 "searchword": self.keyword,
                 "recruitPage": page,
+                # ★ 정렬 파라미터는 recruitSort 다 (recruitPage · recruitPageCount 와 같은 규칙).
+                #   빼면 기본값이 정확도순이라 등록일과 무관한 순서로 온다. 그러면
+                #   "앞쪽 N페이지만 봐도 신규를 다 잡는다" 는 전제가 깨진다.
+                #   값은 사이트 정렬 버튼이 쓰는 것: relation · accuracy · reg_dt ·
+                #   edit_dt · closing_dt · apply_cnt · employ_cnt
+                "recruitSort": "reg_dt",
                 "recruitPageCount": self.PAGE_SIZE,
             },
             snapshot=f"list_p{page}",

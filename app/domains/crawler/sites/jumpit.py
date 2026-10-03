@@ -41,7 +41,15 @@ class JumpitCrawler(BaseSiteCrawler):
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         payload = await self.get_json(
             self.LIST_URL,
-            params={"sort": "popular", "highlight": "false", "page": page},
+            # ★ 최신순이어야 "앞쪽 N페이지만 봐도 신규를 다 잡는다" 가 성립한다.
+            #   popular 는 생략 시 기본값과 동일한 인기순이라, 오늘 올라온 공고가
+            #   앞쪽에 들어올 이유가 없었다.
+            #   실측 2026-10-03 (같은 모집단 791건, 1페이지 id 구간):
+            #     popular  55,013,728 ~ 55,115,564
+            #     latest   55,172,775 ~ 55,193,549
+            #   페이지가 뒤로 갈수록 과거로 내려간다 (p1 중앙값 55,191,329 →
+            #   p10 55,161,511 → p40 54,966,807).
+            params={"sort": "latest", "highlight": "false", "page": page},
             snapshot=f"list_p{page}",
         )
         return self.parse_list(payload, page)

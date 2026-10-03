@@ -411,6 +411,22 @@ async def get_content_hashes(
     return {sjid: h for sjid, h in rows}
 
 
+async def all_source_ids(session: AsyncSession, source: str) -> set[str]:
+    """그 사이트에서 지금까지 수집한 모든 공고 ID.
+
+    ★ recent_source_ids 와 쓰임이 다르다. 저쪽은 "최근 N일 내 수집" 이라 상세
+      요청을 생략할지 판단하는 용도고, 이쪽은 "우리가 아예 가진 적 있는가" 라
+      목록을 어디까지 내려갈지 판단하는 용도다. 7일 집합으로 중단을 판단하면
+      8일 전에 받은 공고가 '처음 보는 것' 으로 잡혀 영영 멈추지 않는다.
+    """
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id).where(JobPosting.source == source)
+        )
+    ).all()
+    return {row if isinstance(row, str) else row[0] for row in rows}
+
+
 async def recent_source_ids(session: AsyncSession, source: str, *, days: int) -> set[str]:
     if days <= 0:
         return set()
