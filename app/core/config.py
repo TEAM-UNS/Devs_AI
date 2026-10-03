@@ -20,10 +20,7 @@ class Settings(BaseSettings):
 
     redis_url: str
     arq_max_jobs: int = 4
-    # 원티드가 목록 150페이지를 걷고, 사람인은 키워드당 30페이지다.
-    # 평소에는 증분 필터가 상세를 걸러 600초 안에 끝나지만, 페이지 상한을
-    # 올린 직후 첫 수집은 신규가 수백 건이라 600초를 넘는다.
-    arq_job_timeout: int = 1800
+    arq_job_timeout: int = 600
 
     cors_origins: str
 

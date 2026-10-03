@@ -23,19 +23,11 @@ class CrawlJob:
 
 def iter_crawl_jobs(config: Optional[dict[str, dict[str, object]]] = None) -> list[CrawlJob]:
     if not config:
-        # 페이지 수는 목록이 실제로 끝나는 지점 + 여유로 잡는다. CrawlService 는
-        # 빈 페이지를 만나면 break 하므로 넉넉하게 줘도 요청 1번만 더 나간다.
-        #   실측 2026-10-02 (목록 1페이지씩 찍어 확인)
-        #     점핏   p50 에서 7건(부분) · p60 0건  → 총 791건
-        #     원티드 p100 까지 20건씩 · p150 0건   → API 가 총계를 주지 않아 범위로만 안다
-        #     사람인 p40 까지 페이지당 신규 17~29건. 검색이 느슨해 깊이 들어가면
-        #            관련도가 떨어진다(개발 분야 분류율 p8 40/40 · p32 30/40 · p56 29/40).
-        #            30페이지까지만 — 그 이상은 트렌드 집계의 분모만 늘린다
         config = {
-            "jumpit": {"pages": 60, "keywords": None},
-            "wanted": {"pages": 150, "keywords": None},
+            "jumpit": {"pages": 40, "keywords": None},
+            "wanted": {"pages": 30, "keywords": None},
             "saramin": {
-                "pages": 30,
+                "pages": 8,
                 "keywords": [
                     "백엔드",
                     "프론트엔드",
