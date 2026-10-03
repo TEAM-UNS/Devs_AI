@@ -40,6 +40,24 @@ def _parse_deadline(text: Optional[str]) -> Optional[datetime]:
     return candidate
 
 
+def _parse_list_posted_at(text: Optional[str]) -> Optional[datetime]:
+    """목록의 "등록일 26/10/03" 에서 등록일만 뽑는다.
+
+    ★ 같은 자리에 "수정일 26/09/28" 이 오기도 한다. 그건 등록일이 아니므로
+      받지 않는다 — 수정일을 등록일로 쓰면 오래된 공고가 최근 것으로 집계된다.
+    """
+    if not text or "등록일" not in text:
+        return None
+    match = re.search(r"(\d{2})/(\d{1,2})/(\d{1,2})", text)
+    if not match:
+        return None
+    year, month, day = (int(g) for g in match.groups())
+    try:
+        return datetime(2000 + year, month, day, tzinfo=timezone(timedelta(hours=9)))
+    except ValueError:
+        return None
+
+
 def _parse_datetime(text: Optional[str]) -> Optional[datetime]:
     if not text:
         return None
@@ -72,6 +90,9 @@ class SaraminCrawler(BaseSiteCrawler):
         "sector": ".job_sector",
         "sector_noise": ".job_day",
         "deadline": ".job_date .date",
+        # ★ 등록일은 목록에만 있다. 상세의 "시작일" 은 접수 시작일이라 다르다
+        #   (접수 예정 공고는 시작일이 미래다 — 실측 2026-10-23 시작 공고).
+        "posted": ".job_day",
         "body": ".user_content",
     }
 
@@ -145,6 +166,11 @@ class SaraminCrawler(BaseSiteCrawler):
         company_node = item.select_one(self.SELECTORS["company"])
         company = company_node.get_text(" ", strip=True) if company_node else ""
 
+        # ★ 등록일(.job_day)은 .job_sector 안에 있다. 아래에서 노이즈로 떼어내므로
+        #   반드시 그 전에 읽어야 한다.
+        posted_node = item.select_one(self.SELECTORS["posted"])
+        posted_text = posted_node.get_text(" ", strip=True) if posted_node else None
+
         sector = item.select_one(self.SELECTORS["sector"])
         keywords: list[str] = []
         if sector:
@@ -170,6 +196,7 @@ class SaraminCrawler(BaseSiteCrawler):
             closed_at=_parse_deadline(
                 deadline_node.get_text(" ", strip=True) if deadline_node else None
             ),
+            published_at=_parse_list_posted_at(posted_text),
             raw={"list_condition": hu.block_text(item.select_one(".job_condition"))},
         )
 
@@ -219,7 +246,9 @@ class SaraminCrawler(BaseSiteCrawler):
             "employment_type": hu.pick(pairs, "employment_type"),
             "salary_raw": hu.pick(pairs, "salary"),
             "locations": [loc for loc in [hu.pick(pairs, "location")] if loc],
-            "published_at": _parse_datetime(hu.pick(pairs, "posted_at")),
+            # ★ 목록에서 등록일을 얻었으면 그대로 둔다. 여기 "시작일" 은 접수
+            #   시작일이라 등록일과 다르고, 접수 예정 공고는 미래 날짜가 온다.
+            "published_at": job.published_at or _parse_datetime(hu.pick(pairs, "posted_at")),
             "closed_at": _parse_datetime(hu.pick(pairs, "expires_at")) or job.closed_at,
             "company_tags": company_types,
             "company_industry": hu.pick(pairs, "industry"),

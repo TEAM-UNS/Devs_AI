@@ -182,7 +182,16 @@ class CrawlService:
         start_page: int = 1,
         skip_seen_days: int = 0,
         keyword: Optional[str] = None,
+        until_posted_before: Optional[datetime] = None,
     ) -> CrawlStats:
+        """until_posted_before 를 주면 백필 모드로 돈다.
+
+        ★ 평소 수집과 끊는 기준이 다르다.
+          평소   기수집 공고만 나오는 페이지가 연속 → 중단 (신규만 주우면 됨)
+          백필   등록일이 기준일보다 과거로 내려감 → 중단 (과거를 메우는 게 목적)
+          백필에서 기수집 기준으로 끊으면 이미 가진 구간을 만나는 순간 멈춰서
+          그 너머의 빈 구간을 영영 못 채운다.
+        """
         stats = CrawlStats()
 
         async with get_worker_session() as session:
@@ -260,7 +269,16 @@ class CrawlService:
                         known,
                     )
 
-                if known_pages >= self.STOP_AFTER_KNOWN_PAGES:
+                if until_posted_before is not None:
+                    if await self._page_is_older_than(jobs, until_posted_before):
+                        log.info(
+                            "%s: 등록일이 %s 이전으로 내려왔습니다 — page %d 에서 종료합니다.",
+                            self.crawler.source,
+                            until_posted_before.date(),
+                            page,
+                        )
+                        break
+                elif known_pages >= self.STOP_AFTER_KNOWN_PAGES:
                     log.info(
                         "%s: 이미 가진 공고만 %d페이지 연속 — page %d 에서 종료합니다.",
                         self.crawler.source,
@@ -282,6 +300,24 @@ class CrawlService:
         )
         await self._close_run(run_id, stats, status)
         return stats
+
+    async def _page_is_older_than(self, jobs: list[RawJob], cutoff: datetime) -> bool:
+        """이 페이지가 통째로 기준일보다 과거인가.
+
+        목록이 등록일을 주는 사이트(사람인)는 그 값을, 안 주는 사이트(점핏)는
+        이미 가진 공고의 DB 값을 쓴다. 날짜를 하나도 모르면 판단하지 않고 계속
+        내려간다 — 모르면서 끊는 것보다 더 받는 쪽이 안전하다.
+        """
+        dates = [job.published_at for job in jobs if job.published_at]
+        unknown = [job.source_job_id for job in jobs if not job.published_at]
+        if unknown:
+            async with get_worker_session() as session:
+                stored = await repository.posted_at_for(session, self.crawler.source, unknown)
+            dates.extend(stored.values())
+        if not dates:
+            return False
+        newest = max(d if d.tzinfo else d.replace(tzinfo=UTC) for d in dates)
+        return newest < cutoff
 
     async def _fetch_details(self, jobs: list[RawJob], stats: CrawlStats) -> list[RawJob]:
         results = await asyncio.gather(

@@ -411,6 +411,28 @@ async def get_content_hashes(
     return {sjid: h for sjid, h in rows}
 
 
+async def posted_at_for(
+    session: AsyncSession, source: str, source_job_ids: Sequence[str]
+) -> dict[str, datetime]:
+    """이미 가진 공고들의 등록일. 백필이 "어디까지 내려왔는지" 판단하는 데 쓴다.
+
+    ★ 목록에 등록일이 없는 사이트(점핏)에서도 기수집 공고라면 DB 로 알 수 있다.
+      상세를 다시 받지 않고 날짜를 얻기 위한 조회다.
+    """
+    if not source_job_ids:
+        return {}
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id, JobPosting.posted_at).where(
+                JobPosting.source == source,
+                JobPosting.source_job_id.in_(list(source_job_ids)),
+                JobPosting.posted_at.is_not(None),
+            )
+        )
+    ).all()
+    return {sjid: posted for sjid, posted in rows}
+
+
 async def all_source_ids(session: AsyncSession, source: str) -> set[str]:
     """그 사이트에서 지금까지 수집한 모든 공고 ID.
 

@@ -2,10 +2,10 @@
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RawJob(BaseModel):
@@ -28,6 +28,21 @@ class RawJob(BaseModel):
     employment_type: Optional[str] = None
 
     published_at: Optional[datetime] = None
+
+    @field_validator("published_at")
+    @classmethod
+    def _no_future_posting_date(cls, value: Optional[datetime]) -> Optional[datetime]:
+        """★ 등록일이 미래면 버린다.
+
+        사이트가 실제로 미래 값을 준다 — 사람인은 접수 예정 공고의 시작일을,
+        점핏은 publishedAt 을 게시 예정일로 준다(실측 6건, 최대 20일 뒤).
+        미래 날짜는 어떤 기간 조건에도 항상 걸려서 "오늘 올라온 공고" 에도
+        "이번 주 공고" 에도 들어간다. 모르는 것으로 두는 편이 낫다.
+        """
+        if value is None:
+            return None
+        moment = value if value.tzinfo else value.replace(tzinfo=UTC)
+        return None if moment > datetime.now(UTC) else value
     closed_at: Optional[datetime] = None
 
     detail_fetched: bool = False
