@@ -14,10 +14,12 @@ from langchain_core.messages import (
     HumanMessage,
     AIMessage,
 )
+from app.core.redis import get_redis
 from app.core.exception.exceptions import UpstreamError
 from app.core.database import session_factory
 from app.infra.llm.client import build_chat_model
 from app.infra.embedding.factory import build_embedder
+from app.domains.chat import guard
 from app.domains.chat.exceptions import SessionNotFound
 from app.domains.chat.enums import (
     StreamEvent,
@@ -153,6 +155,7 @@ async def stream(
     message: str,
     is_new: bool,
     history: list[BaseMessage],
+    user_id: int,
 ) -> AsyncIterator[ServerSentEvent]:
     answer: list[str] = []
     tool_calls: list[dict[str, Any]] = []
@@ -233,7 +236,19 @@ async def stream(
             len("".join(answer))
         )
         await asyncio.shield(
-            _save_answer(session_id, answer, tool_calls, usage)
+            _save_answer(
+                session_id,
+                answer,
+                tool_calls,
+                usage
+            )
+        )
+        await asyncio.shield(
+            guard.add_tokens(
+                get_redis(),
+                user_id, 
+                usage["input"] + usage["output"]
+            )
         )
         raise
 
@@ -278,6 +293,12 @@ async def stream(
         answer,
         tool_calls,
         usage,
+    )
+
+    await guard.add_tokens(
+        get_redis(),
+        user_id,
+        usage["input"] + usage["output"]
     )
 
     tools_used = [
