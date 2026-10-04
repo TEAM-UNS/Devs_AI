@@ -69,6 +69,7 @@ async def get_popular_skills(
         "days": result.days,
         "skills": [
             {
+                "rank": item.rank,
                 "name": item.skill,
                 "postings": item.posting_count,
                 "share": item.share
@@ -82,6 +83,7 @@ async def get_popular_skills(
     "get_rising_skills",
     description=(
         "최근 급상승·급하락한 기술을 돌려준다. window_days 기간을 직전 같은 기간과 비교한다. "
+        "직전 기간에 없다가 새로 나타난 기술은 newcomers 로 따로 준다. "
         "'요즘 뜨는 기술' 같은 질문에 쓴다."
     ),
 )
@@ -127,8 +129,19 @@ async def get_rising_skills(
         "recent_postings": result.recent_postings,
         "previous_postings": result.previous_postings,
         "low_confidence": result.low_confidence,
+        "newcomers": [
+            {
+                "rank": item.rank,
+                "name": item.skill,
+                "recent": item.posting_count,
+                "share": item.share
+            }
+            for item in result.newcomers
+        ],
+        # rank 는 표본 크기까지 반영한 순위다. 증감률로 다시 세우면 안 된다
         "skills": [
             {
+                "rank": item.rank,
                 "name": item.skill,
                 "recent": item.recent_count,
                 "previous": item.previous_count,
