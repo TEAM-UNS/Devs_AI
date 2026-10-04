@@ -270,7 +270,7 @@ class CrawlService:
                     )
 
                 if until_posted_before is not None:
-                    if await self._page_is_older_than(jobs, until_posted_before):
+                    if self._page_is_older_than(jobs, until_posted_before):
                         log.info(
                             "%s: 등록일이 %s 이전으로 내려왔습니다 — page %d 에서 종료합니다.",
                             self.crawler.source,
@@ -301,19 +301,20 @@ class CrawlService:
         await self._close_run(run_id, stats, status)
         return stats
 
-    async def _page_is_older_than(self, jobs: list[RawJob], cutoff: datetime) -> bool:
+    def _page_is_older_than(self, jobs: list[RawJob], cutoff: datetime) -> bool:
         """이 페이지가 통째로 기준일보다 과거인가.
 
-        목록이 등록일을 주는 사이트(사람인)는 그 값을, 안 주는 사이트(점핏)는
-        이미 가진 공고의 DB 값을 쓴다. 날짜를 하나도 모르면 판단하지 않고 계속
-        내려간다 — 모르면서 끊는 것보다 더 받는 쪽이 안전하다.
+        ★ 목록이 직접 주는 등록일만 본다. DB 에 저장된 등록일은 쓰지 않는다.
+          한때 "목록에 날짜가 없는 공고는 DB 값으로 메우자" 고 했다가 판정이
+          망가졌다. 그 값들은 예전 로직으로 저장된 것이라(사람인은 등록일이
+          아니라 접수 시작일이었다) 실제보다 한참 최근으로 나온다.
+          실측: p31 목록 등록일 08/24 인데 DB 값 09/08 이 섞여 3페이지를 더 갔다.
+
+        ★ 목록이 날짜를 안 주는 사이트(점핏)는 판단하지 않고 목록 끝까지 간다.
+          점핏은 활성 공고 전체가 791건·51페이지라 끝까지 받아도 2분이다.
+          모르면서 끊는 것보다 더 받는 쪽이 안전하다.
         """
         dates = [job.published_at for job in jobs if job.published_at]
-        unknown = [job.source_job_id for job in jobs if not job.published_at]
-        if unknown:
-            async with get_worker_session() as session:
-                stored = await repository.posted_at_for(session, self.crawler.source, unknown)
-            dates.extend(stored.values())
         if not dates:
             return False
         newest = max(d if d.tzinfo else d.replace(tzinfo=UTC) for d in dates)
