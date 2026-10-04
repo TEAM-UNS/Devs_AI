@@ -56,6 +56,9 @@ class ChatMessage(SQLModel, table=True):
 
     content: str = Field(sa_type=Text)
 
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
     created_at: datetime = Field(
         sa_column=Column(
             DateTime(timezone=True),
