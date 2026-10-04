@@ -5,8 +5,6 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",
@@ -14,13 +12,13 @@ class Settings(BaseSettings):
     )
 
     database_url: str
-    db_echo: bool = False
-    db_pool_size: int = 10
-    db_max_overflow: int = 5
+    db_echo: bool
+    db_pool_size: int
+    db_max_overflow: int
 
     redis_url: str
-    arq_max_jobs: int = 4
-    arq_job_timeout: int = 600
+    arq_max_jobs: int
+    arq_job_timeout: int
 
     cors_origins: str
 
@@ -34,6 +32,9 @@ class Settings(BaseSettings):
 
     gemini_model: str
     llm_max_retry: int = 3
+
+    chat_rate_limit_per_minute: int
+    chat_daily_token_budget: int
 
     embed_dim: int = 1024
     embed_batch_size: int = 96

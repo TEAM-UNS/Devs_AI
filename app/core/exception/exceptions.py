@@ -1,5 +1,6 @@
 from typing import Any, Optional
 
+
 class AppException(Exception):
     code = "INVALID_REQUEST"
     
