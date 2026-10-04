@@ -14,10 +14,10 @@ from langchain_core.messages import (
     HumanMessage,
     AIMessage,
 )
-
+from app.core.exception.exceptions import UpstreamError
+from app.core.database import session_factory
 from app.infra.llm.client import build_chat_model
 from app.infra.embedding.factory import build_embedder
-from app.core.database import session_factory
 from app.domains.chat.exceptions import SessionNotFound
 from app.domains.chat.enums import (
     StreamEvent,
@@ -65,7 +65,7 @@ async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMess
                 request.user_id
             )
             if chat_session is None:
-                raise SessionNotFound(request.session_id)
+                raise SessionNotFound()
 
             row = await repository.recent_messages(request.session_id)
             history = _to_messages(row)
@@ -237,16 +237,32 @@ async def stream(
         )
         raise
 
+    except UpstreamError as exc:
+        logger.warning(
+            "chat stream — LLM 장애: %s",
+            exc.message
+        )
+        yield _event(
+            StreamEvent.ERROR,
+            {
+                "code": exc.code,
+                "message": "답변 생성에 실패했습니다. 잠시 후 다시 시도해주세요.",
+                "recoverable": True,
+            },
+        )
+        return
+
     except Exception:
         logger.exception("chat stream 실패")
 
         yield _event(
             StreamEvent.ERROR,
             {
-            "code": "INTERNAL_ERROR",
-            "message": "답변 생성에 실패했습니다.",
-            "recoverable": False,
-        })
+                "code": "INTERNAL_ERROR",
+                "message": "답변 생성에 실패했습니다.",
+                "recoverable": False,
+            },
+        )
         return
 
     if title_task is not None:
