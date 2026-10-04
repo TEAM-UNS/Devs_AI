@@ -15,8 +15,8 @@ class StreamRequest(BaseModel):
 
 @dataclass(frozen=True)
 class DataCoverage:
-    collected_from: date
-    collected_to: date
+    posted_from: date
+    posted_to: date
     total_postings: int
     active_postings: int
     image_only_ratio: float
@@ -72,6 +72,8 @@ class RisingSkill:
 @dataclass(frozen=True)
 class RisingSkills:
     items: list[RisingSkill]
+    # 직전 기간 0건이던 기술. 증가율로 줄 세우면 상위를 독점해서 따로 뺀다
+    newcomers: list[SkillCount]
     window_days: int
     recent_postings: int
     previous_postings: int
