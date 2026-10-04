@@ -45,12 +45,16 @@ class ChatRepository:
     async def add_message(
         self, session_id: int,
         role: MessageRole,
-        content: str
+        content: str,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
     ) -> ChatMessage:
         row = ChatMessage(
             session_id=session_id,
             role=role,
-            content=content
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
         self.session.add(row)

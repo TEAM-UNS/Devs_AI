@@ -85,6 +85,7 @@ async def _save_answer(
     session_id: int,
     answer: list[str],
     tool_calls: list[dict[str, Any]],
+    usage: dict[str, int]
 ) -> Optional[int]:
     text = "".join(answer).strip()
     if not text:
@@ -95,7 +96,9 @@ async def _save_answer(
         message = await repository.add_message(
             session_id,
             MessageRole.ASSISTANT,
-            text
+            text,
+            usage["input"],
+            usage["output"]
         )
 
         if tool_calls:
@@ -154,6 +157,7 @@ async def stream(
     answer: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     graph_ids: list[str] = []
+    usage = {"input": 0, "output": 0}
 
     title_task = asyncio.create_task(
         _make_title(session_id, message)
@@ -171,8 +175,17 @@ async def stream(
                 session_factory=session_factory,
                 embedder=build_embedder()
             ),
-            stream_mode=["messages", "custom"],
+            stream_mode=["messages", "custom", "updates"],
         ):
+            if mode == "updates":
+                for payload in chunk.values():
+                    for node_message in payload.get("messages", []):
+                        if isinstance(node_message, AIMessage) and node_message.usage_metadata:
+                            usage["input"] += node_message.usage_metadata.get("input_tokens", 0)
+                            usage["output"] += node_message.usage_metadata.get("output_tokens", 0)
+
+                continue
+                
             if mode == "custom":
                 if chunk["type"] == "tool_start":
                     tool_calls.append(
@@ -219,7 +232,9 @@ async def stream(
             "chat stream 중단 — 연결 끊김 (%d자 생성)",
             len("".join(answer))
         )
-        await asyncio.shield(_save_answer(session_id, answer))
+        await asyncio.shield(
+            _save_answer(session_id, answer, tool_calls, usage)
+        )
         raise
 
     except Exception:
@@ -245,7 +260,8 @@ async def stream(
     message_id = await _save_answer(
         session_id,
         answer,
-        tool_calls
+        tool_calls,
+        usage,
     )
 
     tools_used = [
@@ -255,7 +271,9 @@ async def stream(
 
     logger.info(
         "chat stream 완료 — 툴 %s",
-        tools_used or "없음"
+        tools_used or "없음",
+        usage["input"],
+        usage["output"],
     )
 
     yield _event(
@@ -263,5 +281,10 @@ async def stream(
         {
             "message_id": message_id,
             "tools_used": tools_used,
-            "graph_ids": graph_ids
-         })
+            "graph_ids": graph_ids,
+            "usage": {
+                "input_tokens": usage["input"],
+                "output_tokens": usage["output"],
+            },
+        },
+    )
