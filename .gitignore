@@ -69,3 +69,6 @@ scripts/backfill_*.py
 alembic/
 alembic.ini
 init.sql
+
+# 백엔드와의 DB 공유 경계 메모. 접속 정보가 섞이기 쉬워 올리지 않는다
+backend_sync/
