@@ -71,8 +71,8 @@ class ChatQueries:
 
     _STRICT = (Requirement.TAG, Requirement.REQUIRED)
 
-    # K 없이 나누면 지난 구간 0건인 스킬이 무한대 증가율이 된다
-    _RISING_SMOOTHING = 1
+    # 정렬 점수에만 쓰는 가상 표본. 값이 작으면 4→26 같은 소수 표본이 상위를 먹는다
+    _RISING_SMOOTHING = 20
 
     _LOW_CONFIDENCE_SAMPLE = 10
 
@@ -90,8 +90,9 @@ class ChatQueries:
         totals = (
             await self.session.exec(
                 select(
-                    func.min(JobPosting.created_at),
-                    func.max(JobPosting.created_at),
+                    # 수집일이 아니라 공고 게시일 기준이다
+                    func.min(ChatQueries.APPEARED_AT),
+                    func.max(ChatQueries.APPEARED_AT),
                     func.count(JobPosting.id),
                     func.count(JobPosting.id).filter(
                         JobPosting.expires_at.is_(None) | (JobPosting.expires_at >= func.now())
@@ -140,8 +141,8 @@ class ChatQueries:
         ).one()
 
         return DataCoverage(
-            collected_from=first.date(),
-            collected_to=last.date(),
+            posted_from=first.date(),
+            posted_to=last.date(),
             total_postings=total,
             active_postings=active,
             image_only_ratio=round(image_only / total, 4) if total else 0.0,
@@ -374,6 +375,7 @@ class ChatQueries:
         field: Optional[TechFieldCode] = None,
         window_days: int = 7,
         min_count: int = 5,
+        min_volume: int = 20,
         top: int = 10,
         include_common: bool = False,
     ) -> RisingSkills:
@@ -387,10 +389,10 @@ class ChatQueries:
             base.append(Skill.is_common.is_(False))
 
         recent = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            self.APPEARED_AT >= recent_from
+            ChatQueries.APPEARED_AT >= recent_from
         )
         previous = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            and_(self.APPEARED_AT >= previous_from, self.APPEARED_AT < recent_from)
+            and_(ChatQueries.APPEARED_AT >= previous_from, ChatQueries.APPEARED_AT < recent_from)
         )
 
         rows = (
@@ -399,33 +401,46 @@ class ChatQueries:
                 .select_from(PostingSkill)
                 .join(Skill, Skill.id == PostingSkill.skill_id)
                 .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
-                .where(*base, self.APPEARED_AT >= previous_from)
+                .where(*base, ChatQueries.APPEARED_AT >= previous_from)
                 .group_by(Skill.name)
                 .having(recent >= min_count)
             )
         ).all()
 
+        # 직전 0건은 증가율이 무한대에 가까워 급상승에서 빼고, 표본이 너무 적은 것도 거른다
         scored = sorted(
             (
                 (
                     name,
                     recent_count,
                     previous_count,
+                    # 정렬용 점수 (표본 보정)
                     (recent_count + self._RISING_SMOOTHING)
-                    / (previous_count + self._RISING_SMOOTHING)
-                    - 1,
+                    / (previous_count + self._RISING_SMOOTHING),
+                    # 화면에 보여줄 실제 증감률
+                    recent_count / previous_count - 1,
                 )
                 for name, recent_count, previous_count in rows
+                if previous_count > 0 and recent_count + previous_count >= min_volume
             ),
             key=lambda row: (-row[3], row[0]),
+        )[:top]
+
+        fresh = sorted(
+            (
+                (name, recent_count)
+                for name, recent_count, previous_count in rows
+                if previous_count == 0
+            ),
+            key=lambda row: (-row[1], row[0]),
         )[:top]
 
         window_counts = (
             await self.session.exec(
                 select(
-                    func.count().filter(self.APPEARED_AT >= recent_from),
+                    func.count().filter(ChatQueries.APPEARED_AT >= recent_from),
                     func.count().filter(
-                        and_(self.APPEARED_AT >= previous_from, self.APPEARED_AT < recent_from)
+                        and_(ChatQueries.APPEARED_AT >= previous_from, ChatQueries.APPEARED_AT < recent_from)
                     ),
                 )
                 .select_from(JobPosting)
@@ -447,7 +462,18 @@ class ChatQueries:
                     previous_count=previous_count,
                     growth_rate=round(rate, 4),
                 )
-                for index, (name, recent_count, previous_count, rate) in enumerate(scored, start=1)
+                for index, (name, recent_count, previous_count, _score, rate) in enumerate(
+                    scored, start=1
+                )
+            ],
+            newcomers=[
+                SkillCount(
+                    rank=index,
+                    skill=name,
+                    posting_count=recent_count,
+                    share=round(recent_count / recent_postings, 4) if recent_postings else 0.0,
+                )
+                for index, (name, recent_count) in enumerate(fresh, start=1)
             ],
             window_days=window_days,
             recent_postings=recent_postings,
