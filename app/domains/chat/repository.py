@@ -9,8 +9,15 @@ from app.domains.chat.enums import MessageRole
 from app.domains.chat.models import (
     ChatMessage,
     ChatSession,
-    ChatToolCall
+    ChatToolCall,
+    User,
+    UserMajor,
+    UserSkill
 )
+from app.domains.chat.schemas import UserProfile
+
+from app.domains.crawler.enums import CareerLevel
+from app.domains.crawler.models import Skill, TechField
 
 
 class ChatRepository:
@@ -98,4 +105,48 @@ class ChatRepository:
             update(ChatSession)
             .where(ChatSession.id == session_id)
             .values(title=title)
+        )
+
+    @staticmethod
+    def _career_level(personal_history: str) -> Optional[CareerLevel]:
+        return {
+            "NO_EXPERIENCE": CareerLevel.NEWCOMER,
+            "ENTRY_LEVEL": CareerLevel.NEWCOMER,
+            "JUNIOR": CareerLevel.JUNIOR,
+            "MIDDLE": CareerLevel.MID,
+            "SENIOR": CareerLevel.SENIOR,
+        }.get(personal_history)
+
+
+    async def get_profile(self, user_id: int) -> Optional[UserProfile]:
+        user = (
+            await self.session.exec(select(User).where(User.user_id == user_id))
+        ).first()
+        if user is None:
+            return None
+
+        fields = (
+            await self.session.exec(
+                select(TechField.code)
+                .join(UserMajor, UserMajor.field_id == TechField.id)
+                .where(UserMajor.user_id == user_id)
+                .order_by(TechField.sort_order)
+            )
+        ).all()
+
+        skills = (
+            await self.session.exec(
+                select(Skill.name)
+                .join(UserSkill, UserSkill.skill_id == Skill.id)
+                .where(UserSkill.user_id == user_id)
+                .order_by(Skill.name)
+            )
+        ).all()
+
+        return UserProfile(
+            user_id=user_id,
+            name=user.name,
+            career_level=self._career_level(user.personal_history),
+            fields=list(fields),
+            skills=list(skills),
         )
