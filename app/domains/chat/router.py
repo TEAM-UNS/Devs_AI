@@ -12,7 +12,7 @@ chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
 @chat_router.post("/stream")
 async def stream(body: StreamRequest, redis: RedisDep) -> EventSourceResponse:
     headers = await guard.check(redis, body.user_id)
-    session_id, is_new, history = await service.open_session(body)
+    session_id, is_new, history, profile = await service.open_session(body)
 
     return EventSourceResponse(
         service.stream(
@@ -21,6 +21,7 @@ async def stream(body: StreamRequest, redis: RedisDep) -> EventSourceResponse:
             is_new,
             history,
             body.user_id,
+            profile,
         ),
         headers={
             "X-Accel-Buffering": "no",
