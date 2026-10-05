@@ -1,3 +1,6 @@
+from app.domains.chat.schemas import UserProfile
+
+
 def system_prompt() -> str:
     return (
         "너는 국내 IT 채용공고 데이터를 분석해 답하는 어시스턴트다.\n"
@@ -13,3 +16,15 @@ def title_prompt() -> str:
         "사용자 질문을 20자 이내 한국어 제목으로 요약한다.\n"
         "따옴표·마침표·설명 없이 제목만 출력한다."
     )
+
+
+def profile_prompt(profile: UserProfile) -> str:
+    lines = [f"사용자 정보: {profile.name}"]
+    if profile.career_level:
+        lines.append(f"- 경력: {profile.career_level.value}")
+    if profile.fields:
+        lines.append(f"- 관심 직군: {', '.join(profile.fields)}")
+    if profile.skills:
+        lines.append(f"- 보유 스킬: {', '.join(profile.skills)}")
+    lines.append("질문에 직군이 없으면 관심 직군을 기본값으로 쓴다. 보유 스킬은 이미 아는 것으로 본다")
+    return "\n".join(lines)
