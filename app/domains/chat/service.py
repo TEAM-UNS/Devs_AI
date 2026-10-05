@@ -34,6 +34,7 @@ from app.domains.chat.schemas import StreamRequest
 from app.domains.chat.graph.build import build_graph
 from app.domains.chat.graph.prompts import title_prompt
 from app.domains.chat.tools.context import ToolContext
+from app.domains.chat.schemas import UserProfile
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,9 @@ def _to_messages(rows: list[ChatMessage]) -> list[BaseMessage]:
     return messages
 
 
-async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMessage]]:
+async def open_session(
+    request: StreamRequest
+) -> tuple[int, bool, list[BaseMessage], Optional[UserProfile]]:
     is_new = request.session_id is None
     history: list[BaseMessage] = []
 
@@ -72,6 +75,8 @@ async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMess
             row = await repository.recent_messages(request.session_id)
             history = _to_messages(row)
 
+        profile = await repository.get_profile(request.user_id)
+
         await repository.add_message(
             chat_session.id,
             MessageRole.USER,
@@ -80,14 +85,14 @@ async def open_session(request: StreamRequest) -> tuple[int, bool, list[BaseMess
 
         await db.commit()
 
-    return chat_session.id, is_new, history
+    return chat_session.id, is_new, history, profile
 
 
 async def _save_answer(
     session_id: int,
     answer: list[str],
     tool_calls: list[dict[str, Any]],
-    usage: dict[str, int]
+    usage: dict[str, int],
 ) -> Optional[int]:
     text = "".join(answer).strip()
     if not text:
@@ -156,6 +161,7 @@ async def stream(
     is_new: bool,
     history: list[BaseMessage],
     user_id: int,
+    profile: Optional[UserProfile],
 ) -> AsyncIterator[ServerSentEvent]:
     answer: list[str] = []
     tool_calls: list[dict[str, Any]] = []
@@ -176,7 +182,8 @@ async def stream(
             {"messages": [*history, HumanMessage(message)]},
             context=ToolContext(
                 session_factory=session_factory,
-                embedder=build_embedder()
+                embedder=build_embedder(),
+                profile=profile,
             ),
             stream_mode=["messages", "custom", "updates"],
         ):
