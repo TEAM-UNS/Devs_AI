@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
+from app.domains.crawler.enums import CareerLevel
+
 
 class StreamRequest(BaseModel):
     user_id: int
@@ -12,6 +14,16 @@ class StreamRequest(BaseModel):
         max_length=2000
     )
     session_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class UserProfile:
+    user_id: int
+    name: str
+    career_level: Optional[CareerLevel]
+    fields: list[str]
+    skills: list[str]
+
 
 @dataclass(frozen=True)
 class DataCoverage:
