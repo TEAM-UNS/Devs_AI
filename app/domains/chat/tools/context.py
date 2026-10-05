@@ -1,3 +1,5 @@
+from typing import Optional
+
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -6,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.domains.chat.queries import ChatQueries
+from app.domains.chat.schemas import UserProfile
 from app.infra.embedding.port import EmbedderPort
 
 
@@ -13,6 +16,7 @@ from app.infra.embedding.port import EmbedderPort
 class ToolContext:
     session_factory: async_sessionmaker[AsyncSession]
     embedder: EmbedderPort
+    profile: Optional[UserProfile] = None
 
     @asynccontextmanager
     async def queries(self) -> AsyncIterator[ChatQueries]:
