@@ -1,48 +1,16 @@
-"""점핏 — 공개 XHR(JSON) 호출.
-
-실제 응답을 확인하고 필드명을 고정했다 (2026-07-30 기준).
-
-    목록  GET https://jumpit-api.saramin.co.kr/api/positions
-              ?sort=popular&highlight=false&page=N
-          → result.{totalCount, page, positions[]}
-          positions[]: id · title · companyName · techStacks(문자열 배열)
-                       jobCategory(콤마 문자열) · locations[] · minCareer · maxCareer
-                       newcomer · closedAt · serialNumber
-
-    상세  GET https://jumpit-api.saramin.co.kr/api/position/{id}
-          → result.{responsibility, qualifications, preferredRequirements,
-                    welfares, recruitProcess, serviceInfo, location, tags[],
-                    jobCategories[{id,name}], companyUrl, establishDate,
-                    educationName, publishedAt, manDbMcomIdx}
-
-주의
-    - techStacks 의 형태가 목록(문자열 배열)과 상세(`{stack, imagePath}` 객체 배열)로
-      다르다. 상세로 덮어쓸 때 반드시 변환해야 한다.
-    - 연봉 필드가 아예 없다. 점핏은 급여를 공개하지 않으므로
-      salary_type 은 항상 unknown 이 된다.
-    - 날짜 표기도 목록("...T23:59:59")과 상세("... 23:59:59")가 다르다.
-"""
+# 점핏 목록과 상세 수집 (JSON API)
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Optional, Any
 
 from app.domains.crawler.schemas import RawJob
 from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseError
 
 log = logging.getLogger(__name__)
 
-API_BASE = "https://jumpit-api.saramin.co.kr"
-LIST_URL = f"{API_BASE}/api/positions"
-DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
-WEB_BASE = "https://jumpit.saramin.co.kr"
 
-PAGE_SIZE = 16
-
-KST = timezone(timedelta(hours=9))
-
-
-def _parse_dt(value: Any) -> datetime | None:
+def _parse_dt(value: Any) -> Optional[datetime]:
     if not value or not isinstance(value, str):
         return None
     try:
@@ -50,7 +18,7 @@ def _parse_dt(value: Any) -> datetime | None:
     except ValueError:
         log.debug("날짜 파싱 실패: %r", value)
         return None
-    return dt.replace(tzinfo=KST) if dt.tzinfo is None else dt
+    return dt.replace(tzinfo=timezone(timedelta(hours=9))) if dt.tzinfo is None else dt
 
 
 def _split_categories(value: Any) -> list[str]:
@@ -61,13 +29,27 @@ def _split_categories(value: Any) -> list[str]:
 
 class JumpitCrawler(BaseSiteCrawler):
     source = "jumpit"
+
+    API_BASE = "https://jumpit-api.saramin.co.kr"
+    LIST_URL = f"{API_BASE}/api/positions"
+    DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
+    WEB_BASE = "https://jumpit.saramin.co.kr"
+    PAGE_SIZE = 16
+
     referer = f"{WEB_BASE}/positions"
 
-    # ── 목록 ──────────────────────────────────────────────────────────────
     async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
         payload = await self.get_json(
-            LIST_URL,
-            params={"sort": "popular", "highlight": "false", "page": page},
+            self.LIST_URL,
+            # ★ 최신순이어야 "앞쪽 N페이지만 봐도 신규를 다 잡는다" 가 성립한다.
+            #   popular 는 생략 시 기본값과 동일한 인기순이라, 오늘 올라온 공고가
+            #   앞쪽에 들어올 이유가 없었다.
+            #   실측 2026-10-03 (같은 모집단 791건, 1페이지 id 구간):
+            #     popular  55,013,728 ~ 55,115,564
+            #     latest   55,172,775 ~ 55,193,549
+            #   페이지가 뒤로 갈수록 과거로 내려간다 (p1 중앙값 55,191,329 →
+            #   p10 55,161,511 → p40 54,966,807).
+            params={"sort": "latest", "highlight": "false", "page": page},
             snapshot=f"list_p{page}",
         )
         return self.parse_list(payload, page)
@@ -97,7 +79,7 @@ class JumpitCrawler(BaseSiteCrawler):
         return RawJob(
             source=self.source,
             source_job_id=str(job_id),
-            url=f"{WEB_BASE}/position/{job_id}",
+            url=f"{self.WEB_BASE}/position/{job_id}",
             title=item.get("title") or "",
             company_name=item.get("companyName") or "",
             tech_stacks=[s for s in stacks if isinstance(s, str)],
@@ -110,11 +92,10 @@ class JumpitCrawler(BaseSiteCrawler):
             raw={"list": item},
         )
 
-    # ── 상세 ──────────────────────────────────────────────────────────────
     async def fetch_detail(self, job: RawJob) -> RawJob:
         try:
             payload = await self.get_json(
-                DETAIL_URL.format(id=job.source_job_id),
+                self.DETAIL_URL.format(id=job.source_job_id),
                 snapshot=f"position_{job.source_job_id}",
             )
         except CrawlError as exc:
@@ -128,6 +109,7 @@ class JumpitCrawler(BaseSiteCrawler):
             log.warning("jumpit 상세 응답에 result 없음 id=%s", job.source_job_id)
             return job
 
+        # 상세의 techStacks 는 목록과 달리 {stack, imagePath} 객체 배열이다
         stacks = [
             s.get("stack")
             for s in (result.get("techStacks") or [])

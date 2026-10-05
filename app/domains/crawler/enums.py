@@ -1,8 +1,4 @@
-"""market 테이블의 값 어휘. init.sql 의 CHECK 제약과 반드시 일치한다.
-
-models.py 가 `sql_in()` 으로 CHECK 문자열을 여기서 생성하므로,
-Enum 을 고치면 DDL 도 같이 따라온다.
-"""
+# 공고 데이터 Enum
 
 from enum import StrEnum
 
@@ -78,16 +74,3 @@ class RunStatus(StrEnum):
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
-
-
-COMPANY_SIZE_BOUNDS: tuple[tuple[int, CompanySize], ...] = (
-    (1000, CompanySize.ENTERPRISE),
-    (300, CompanySize.LARGE),
-    (100, CompanySize.MEDIUM),
-    (30, CompanySize.SMALL),
-    (0, CompanySize.STARTUP),
-)
-
-
-def sql_in(column: str, enum_cls: type[StrEnum]) -> str:
-    return f"{column} IN (" + ", ".join(f"'{m.value}'" for m in enum_cls) + ")"

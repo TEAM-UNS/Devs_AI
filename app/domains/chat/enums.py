@@ -1,5 +1,3 @@
-"""chat 테이블의 값 어휘."""
-
 from enum import StrEnum
 
 
@@ -10,5 +8,11 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
-def sql_in(column: str, enum_cls: type[StrEnum]) -> str:
-    return f"{column} IN (" + ", ".join(f"'{m.value}'" for m in enum_cls) + ")"
+class StreamEvent(StrEnum):
+    TITLE = "title"
+    SESSION = "session"
+    TOOL_START = "tool_start"
+    GRAPH = "graph"
+    TOKEN = "token"
+    DONE = "done"
+    ERROR = "error"

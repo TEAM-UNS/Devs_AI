@@ -31,6 +31,9 @@ dependencies = [
     "tenacity>=9.0",
     "pyyaml>=6.0",
     "ollama>=0.6.2",
+    "google>=3.0.0",
+    "langchain-google-genai>=4.4.0",
+    "logging>=0.4.9.6",
 ]
 
 [dependency-groups]
@@ -39,34 +42,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "ruff>=0.8",
-    "import-linter>=2.1",
 ]
-
-# scripts/embed_local/ 전용. torch 를 끌고 와 수 GB 라 기본에서 뺐다.
-#     uv sync --group local
-#     uv run python -m scripts.embed_local.run
-# ★ 호스트 전용이다. 워커 이미지에는 넣지 않는다 — 맥의 Docker 는 GPU(MPS)를
-#   통과시키지 않아 컨테이너 안에서는 CPU 로 떨어진다.
-#   실측: 호스트 MPS fp16 90.7 청크/초 vs 컨테이너 CPU 3.4 청크/초
-local = [
-    "sentence-transformers>=3.0",
-    # torch 는 sentence-transformers 가 어차피 끌고 오지만, 여기 직접 적어야
-    # 아래 [tool.uv.sources] 의 CPU 전용 인덱스 지정이 먹는다.
-    # uv 의 source 재정의는 직접 의존성에만 적용되고 전이 의존성은 건너뛴다.
-    "torch>=2.0",
-]
-
-# ── torch 를 linux 에서는 CPU 전용으로 받는다 ────────────────────────────────
-# 기본 PyPI 의 linux 용 torch 는 CUDA 런타임을 끌고 와 이미지가 3.5GB 커진다
-# (nvidia/ 2.9GB · triton/ 652MB — 워커는 GPU 를 못 쓰므로 전부 죽은 무게).
-# macOS 는 marker 로 제외한다. 기본 PyPI 의 torch 가 MPS 를 지원한다.
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }]
 
 [tool.uv]
 package = false
@@ -85,54 +61,3 @@ ignore = ["I001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  의존 규칙 R1~R4 강제 (lint-imports)
-#  CI: `lint-imports` 를 ruff 와 함께 실행
-# ─────────────────────────────────────────────────────────────────────────────
-[tool.importlinter]
-root_package = "app"
-
-# R1 — market 은 아무 도메인도 import 하지 않는다
-[[tool.importlinter.contracts]]
-name = "R1: market is independent"
-type = "forbidden"
-source_modules = ["app.domains.market"]
-forbidden_modules = ["app.domains.crawler", "app.domains.chat", "app.llm"]
-
-# R2 — crawler 는 chat 을 모른다
-[[tool.importlinter.contracts]]
-name = "R2: crawler does not touch chat"
-type = "forbidden"
-source_modules = ["app.domains.crawler"]
-forbidden_modules = ["app.domains.chat"]
-
-# R3 — chat 은 market.queries(읽기)만. models/repository 직접 참조 금지
-[[tool.importlinter.contracts]]
-name = "R3: chat reads market through queries only"
-type = "forbidden"
-source_modules = ["app.domains.chat"]
-forbidden_modules = [
-    "app.domains.market.models",
-    "app.domains.market.repository",
-    "app.domains.crawler",
-]
-
-# R4 — port 는 어댑터를 모른다
-[[tool.importlinter.contracts]]
-name = "R4: port knows no adapter"
-type = "forbidden"
-source_modules = ["app.llm.port"]
-forbidden_modules = [
-    "app.llm.chat_adapter",
-    "app.llm.embed_adapter",
-    "app.llm.gemini_embed_adapter",
-    "app.llm.fake",
-]
-
-# core 는 도메인을 모른다
-[[tool.importlinter.contracts]]
-name = "core is the bottom layer"
-type = "forbidden"
-source_modules = ["app.core"]
-forbidden_modules = ["app.domains", "app.llm"]

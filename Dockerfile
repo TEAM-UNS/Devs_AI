@@ -24,8 +24,6 @@ RUN uv sync --frozen --no-dev
 
 # ② 소스
 COPY app/ ./app/
-COPY alembic/ ./alembic/
-COPY alembic.ini ./
 COPY scripts/ ./scripts/
 
 # 스냅샷 저장 위치. compose 에서 볼륨으로 덮어쓴다.

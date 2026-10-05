@@ -1,20 +1,3 @@
-"""arq WorkerSettings · cron 정의.
-
-    uv run arq app.worker.WorkerSettings
-
-등록 태스크 (crawler/tasks.py 에 구현)
-    crawl_dispatch    04:00  사이트×키워드 팬아웃
-    crawl_site        (팬아웃 대상)
-    embed_postings    (crawl_site 가 enqueue)
-    embed_backfill    05:30
-    embed_companies   06:00
-
-설정
-    max_jobs=4        임베딩 API 동시 호출 제한 고려
-    job_timeout=600
-    중복 방지         _job_id = f"crawl:{site}:{keyword}:{date}"
-"""
-
 import logging
 from typing import Any, ClassVar
 
@@ -22,6 +5,7 @@ from arq import cron
 from arq.worker import func
 
 from app.core.config import get_settings
+from app.core.log import setup_logging
 from app.core.database import close_engine, engine, session_factory
 from app.core.redis import redis_settings
 from app.domains.crawler.tasks import (
@@ -31,18 +15,15 @@ from app.domains.crawler.tasks import (
     embed_companies,
     embed_postings,
 )
-from app.domains.market import repository
-from app.llm.embed_adapter import build_embedder
+from app.domains.crawler import repository
+from app.infra.embedding.factory import build_embedder
+
 
 log = logging.getLogger(__name__)
 
 
-async def startup(ctx: dict[str, Any]) -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+async def startup(ctx: dict[str, Any]):
+    setup_logging()
     settings = get_settings()
 
     ctx["settings"] = settings
@@ -67,7 +48,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         log.warning("이전 실행에서 마감되지 못한 crawl_run %d건을 failed 로 정리했습니다.", stale)
 
 
-async def shutdown(ctx: dict[str, Any]) -> None:
+async def shutdown(ctx: dict[str, Any]):
     await close_engine()
     log.info("worker 종료 — 커넥션 풀 정리 완료")
 

@@ -1,18 +1,3 @@
-"""크롤러 · 임베딩 CLI.
-
-    python -m app.cli inspect --site jumpit [--page 1] [--limit 2]
-    python -m app.cli crawl   --site jumpit --pages 2 [--no-detail]
-                              [--skip-seen-days 7] [--force-reextract]
-    python -m app.cli embed   [--limit 500] [--fake] [--companies]
-    python -m app.cli vector-index --build | --drop
-
-inspect 는 DB 를 건드리지 않는다. 실제 응답을 data/raw/ 에 저장하고
-파서가 뽑아낸 값을 사람이 눈으로 확인하는 용도다.
-
-embed 는 arq 없이 임베딩 파이프라인만 돌린다 (태스크와 같은 서비스 함수를
-부른다). 워커를 띄우지 않고 결과를 확인할 때 쓴다.
-"""
-
 import argparse
 import asyncio
 import json
@@ -22,9 +7,10 @@ import time
 
 from sqlalchemy import text as sa_text
 
+from app.core.config import get_settings
+from app.core.log import setup_logging
 from app.core.database import close_engine, get_worker_session, session_factory
 from app.domains.crawler import embed_service
-from app.domains.crawler.config import DEFAULT_SKIP_SEEN_DAYS
 from app.domains.crawler.service import (
     CrawlService,
     rebuild_bodies_from_snapshots,
@@ -35,28 +21,32 @@ from app.domains.crawler.sites.jobkorea import JobkoreaCrawler
 from app.domains.crawler.sites.jumpit import JumpitCrawler
 from app.domains.crawler.sites.saramin import SaraminCrawler
 from app.domains.crawler.sites.wanted import WantedCrawler
-from app.domains.market import repository, vector_index
-from app.llm.embed_adapter import build_embedder
+from app.domains.crawler import repository
+from app.infra.embedding.factory import build_embedder
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
-SITES: dict[str, type[BaseSiteCrawler]] = {
-    "jumpit": JumpitCrawler,
-    "wanted": WantedCrawler,
-    "saramin": SaraminCrawler,
-}
-KEYWORD_SITES = {"saramin", "jobkorea"}
 
-DISABLED_SITES: dict[str, type[BaseSiteCrawler]] = {"jobkorea": JobkoreaCrawler}
+def _sites(include_disabled: bool = False) -> dict[str, type[BaseSiteCrawler]]:
+    sites: dict[str, type[BaseSiteCrawler]] = {
+        "jumpit": JumpitCrawler,
+        "wanted": WantedCrawler,
+        "saramin": SaraminCrawler,
+    }
+    if include_disabled:
+        sites["jobkorea"] = JobkoreaCrawler
+    return sites
 
 
-def _build_crawler(site: str, keyword: str | None = None) -> BaseSiteCrawler:
-    cls = SITES.get(site) or DISABLED_SITES.get(site)
+def _build_crawler(site: str, keyword: Optional[str] = None) -> BaseSiteCrawler:
+    enabled = _sites()
+    cls = _sites(include_disabled=True).get(site)
     if cls is None:
-        raise SystemExit(f"지원하지 않는 사이트: {site} (가능: {', '.join(SITES)})")
-    if site in DISABLED_SITES:
+        raise SystemExit(f"지원하지 않는 사이트: {site} (가능: {', '.join(enabled)})")
+    if site not in enabled:
         log.warning("%s 는 비활성 사이트입니다. 스냅샷 재파싱 용도로만 쓰세요.", site)
-    if site in KEYWORD_SITES and keyword:
+    if site in {"saramin", "jobkorea"} and keyword:
         return cls(keyword=keyword)
     return cls()
 
@@ -66,7 +56,6 @@ def _preview(value: object, width: int = 90) -> str:
     return text[:width] + ("…" if len(text) > width else "")
 
 
-# ── inspect ─────────────────────────────────────────────────────────────────
 async def cmd_inspect(args: argparse.Namespace) -> int:
     async with _build_crawler(args.site, getattr(args, "keyword", None)) as crawler:
         jobs, total = await crawler.fetch_list_page(args.page)
@@ -117,7 +106,6 @@ async def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── crawl ───────────────────────────────────────────────────────────────────
 async def cmd_crawl(args: argparse.Namespace) -> int:
     started = time.monotonic()
     keyword = getattr(args, "keyword", None)
@@ -147,7 +135,6 @@ async def cmd_crawl(args: argparse.Namespace) -> int:
     return 0 if stats.fetched else 1
 
 
-# ── embed ───────────────────────────────────────────────────────────────────
 async def cmd_embed(args: argparse.Namespace) -> int:
     embedder = build_embedder(force_fake=args.fake)
     factory = session_factory
@@ -155,7 +142,9 @@ async def cmd_embed(args: argparse.Namespace) -> int:
 
     print(f"\n=== 임베딩 시작 (embedder={type(embedder).__name__}) ===")
 
-    if args.companies:
+    if args.skills:
+        stats = await embed_service.embed_skills(factory, embedder)
+    elif args.companies:
         stats = await embed_service.embed_companies(factory, embedder, limit=args.limit)
     else:
         ids = [int(v) for v in args.ids] if args.ids else None
@@ -165,6 +154,7 @@ async def cmd_embed(args: argparse.Namespace) -> int:
 
     print(f"  {stats.as_line()}")
     print(f"  기업          : {stats.companies}")
+    print(f"  스킬          : {stats.skills}")
     print(f"  소요          : {time.monotonic() - started:.1f}초")
     if stats.error_messages:
         print("  오류:")
@@ -184,17 +174,29 @@ async def cmd_embed(args: argparse.Namespace) -> int:
     return 0 if stats.errors == 0 else 1
 
 
-# ── vector-index ────────────────────────────────────────────────────────────
 async def cmd_vector_index(args: argparse.Namespace) -> int:
     action = "DROP" if args.drop else "BUILD"
     print(f"\n=== HNSW 인덱스 {action} ===")
 
+    with_ = "WITH (m = 16, ef_construction = 64)"
+    indexes = (
+        (
+            "posting_chunk_embedding_idx",
+            "CREATE INDEX IF NOT EXISTS posting_chunk_embedding_idx "
+            f"ON market.posting_chunk USING hnsw (embedding vector_cosine_ops) {with_}",
+        ),
+        (
+            "company_profile_embedding_idx",
+            "CREATE INDEX IF NOT EXISTS company_profile_embedding_idx "
+            f"ON market.company USING hnsw (profile_embedding vector_cosine_ops) {with_}",
+        ),
+    )
+
     async with get_worker_session() as session:
         if not args.drop:
-            for setup in vector_index.BUILD_SESSION_SETUP:
-                await session.exec(sa_text(setup))
+            await session.exec(sa_text("SET max_parallel_maintenance_workers = 0"))
 
-        for name, ddl in vector_index.INDEXES:
+        for name, ddl in indexes:
             if args.drop:
                 print(f"  drop {name} …")
                 await session.exec(sa_text(f"DROP INDEX IF EXISTS market.{name}"))
@@ -216,7 +218,6 @@ async def cmd_vector_index(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── reparse ─────────────────────────────────────────────────────────────────
 async def cmd_reparse(args: argparse.Namespace) -> int:
     if args.from_snapshots:
         if not args.site:
@@ -240,14 +241,13 @@ async def cmd_reparse(args: argparse.Namespace) -> int:
     if stats.reembed_queued:
         print(
             f"\n  청크가 달라진 {stats.reembed_queued}건을 재임베딩 대상으로 되돌렸습니다.\n"
-            f"  다음: uv run python -m scripts.embed_local.run"
+            f"  다음: uv run python -m app.cli embed"
         )
 
     await close_engine()
     return 0 if stats.errors == 0 else 1
 
 
-# ── skills report ───────────────────────────────────────────────────────────
 async def cmd_skills_report(args: argparse.Namespace) -> int:
     async with get_worker_session() as session:
         unmatched, total, matched = await repository.count_unmatched_tags(session, source=args.site)
@@ -269,9 +269,6 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
         for item in unmatched[: args.top]:
             print(f"  {item.tag:<{width}}  {item.count}")
 
-    # ★ 태그만 보면 최근 기술을 놓친다. 사이트 태그 목록에 아직 없고 본문에만
-    #   적히기 때문이다. 실제로 RAG·pgvector 같은 벡터 스택이 통째로 빠져
-    #   있었는데 태그 리포트에는 한 건도 안 떴다.
     async with get_worker_session() as session:
         body_terms = await repository.count_unmatched_body_terms(
             session, source=args.site, min_count=args.min_count, limit=args.top
@@ -292,21 +289,20 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
     return 0
 
 
-# ── entry ───────────────────────────────────────────────────────────────────
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli", description="채용 공고 크롤러")
     parser.add_argument("-v", "--verbose", action="store_true", help="디버그 로그")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_inspect = sub.add_parser("inspect", help="실제 응답을 저장하고 파싱 결과를 출력")
-    p_inspect.add_argument("--site", required=True, choices=sorted(SITES))
+    p_inspect.add_argument("--site", required=True, choices=sorted(_sites()))
     p_inspect.add_argument("--page", type=int, default=1)
     p_inspect.add_argument("--limit", type=int, default=2, help="상세를 확인할 공고 수")
     p_inspect.add_argument("--keyword", help="검색 키워드 (사람인·잡코리아)")
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_crawl = sub.add_parser("crawl", help="수집해서 DB 에 적재")
-    p_crawl.add_argument("--site", required=True, choices=sorted(SITES))
+    p_crawl.add_argument("--site", required=True, choices=sorted(_sites()))
     p_crawl.add_argument("--pages", type=int, default=1)
     p_crawl.add_argument("--no-detail", action="store_true", help="목록만 수집 (상세 생략)")
     p_crawl.add_argument("--keyword", help="검색 키워드 (사람인·잡코리아)")
@@ -314,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument(
         "--skip-seen-days",
         type=int,
-        default=DEFAULT_SKIP_SEEN_DAYS,
+        default=get_settings().crawl_skip_seen_days,
         help="최근 N일 내 수집한 공고는 목록에서 걸러 상세를 받지 않는다 (0=끄기)",
     )
     p_crawl.add_argument(
@@ -328,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     p_embed.add_argument("--limit", type=int, help="상위 N건만 (생략 시 전량)")
     p_embed.add_argument("--ids", nargs="+", help="특정 posting_id 만")
     p_embed.add_argument("--companies", action="store_true", help="기업 프로필 임베딩")
+    p_embed.add_argument("--skills", action="store_true", help="스킬 사전 임베딩 (매번 전량)")
     p_embed.add_argument("--fake", action="store_true", help="FakeEmbedder 사용 (API 키 불필요)")
     p_embed.set_defaults(func=cmd_embed)
 
@@ -337,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_reparse = sub.add_parser("reparse", help="저장된 본문으로 스택만 다시 추출 (재수집 없음)")
     p_reparse.add_argument(
-        "--site", choices=sorted({*SITES, *DISABLED_SITES}), help="생략하면 전체"
+        "--site", choices=sorted(_sites(include_disabled=True)), help="생략하면 전체"
     )
     p_reparse.add_argument("--limit", type=int, help="상위 N건만")
     p_reparse.add_argument(
@@ -350,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     p_skills = sub.add_parser("skills", help="사전 관련 리포트")
     skills_sub = p_skills.add_subparsers(dest="skills_command", required=True)
     p_report = skills_sub.add_parser("report", help="사전 미매칭 태그 + 재현율")
-    p_report.add_argument("--site", choices=sorted(SITES), help="생략하면 전체")
+    p_report.add_argument("--site", choices=sorted(_sites()), help="생략하면 전체")
     p_report.add_argument("--top", type=int, default=20)
     p_report.add_argument(
         "--min-count", type=int, default=30, help="본문 스캔에서 이 횟수 미만은 버린다"
@@ -358,11 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     p_report.set_defaults(func=cmd_skills_report)
 
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    setup_logging(logging.DEBUG if args.verbose else logging.INFO)
     return asyncio.run(args.func(args))
 
 

@@ -1,15 +1,30 @@
-"""/chat/* 엔드포인트.
+from fastapi import APIRouter
+from sse_starlette import EventSourceResponse
 
-    POST   /chat/stream                  질의 → SSE 스트리밍 응답
-    POST   /chat/sessions                세션 생성
-    GET    /chat/sessions                내 세션 목록 (페이징)
-    GET    /chat/sessions/{id}           세션 상세 + 메시지 + 차트 복원
-    PATCH  /chat/sessions/{id}           제목 수정
-    DELETE /chat/sessions/{id}           삭제 (soft)
-    GET    /chat/suggestions             추천 질문 (정적 + 프로필 기반)
+from app.core.dependencies import RedisDep
+from app.domains.chat import service, guard
+from app.domains.chat.schemas import StreamRequest
 
-공통
-    - 인증: get_current_user (dev 헤더 / jwt sub)
-    - 타 유저 세션 접근은 403 이 아니라 404 (존재 여부를 노출하지 않는다)
-    - 라우터는 조립만. 로직은 service.py
-"""
+
+chat_router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+@chat_router.post("/stream")
+async def stream(body: StreamRequest, redis: RedisDep) -> EventSourceResponse:
+    headers = await guard.check(redis, body.user_id)
+    session_id, is_new, history, profile = await service.open_session(body)
+
+    return EventSourceResponse(
+        service.stream(
+            session_id,
+            body.message,
+            is_new,
+            history,
+            body.user_id,
+            profile,
+        ),
+        headers={
+            "X-Accel-Buffering": "no",
+            **headers
+        },
+    )

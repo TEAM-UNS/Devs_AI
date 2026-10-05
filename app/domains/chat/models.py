@@ -1,130 +1,153 @@
-"""chat 스키마가 소유하는 테이블 (schema="chat").
-
-    chat_session    id(uuid) · user_id(토큰 sub) · title · message_count
-                    last_message_at · deleted_at(soft delete)
-    chat_message    session_id · seq(세션 내 유일) · role · content · token_count
-    chat_tool_call  message_id · tool_name · arguments · result
-                    chart_payload(그래프 복원) · latency_ms · is_error
-
-chat_message 는 "표시용" 이력이다. LLM 컨텍스트는 LangGraph checkpointer 가
-따로 관리하며, checkpointer 테이블은 라이브러리가 chat 스키마에 직접 만든다
-(여기서 정의하지 않고 alembic 관리 대상도 아니다).
-
-★ `from __future__ import annotations` 를 쓰지 않는다. 어노테이션이 문자열이
-  되면 SQLModel 이 Relationship 대상을 해석하지 못한다.
-"""
-
-import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
-from sqlalchemy import (
-    BigInteger,
-    CheckConstraint,
-    Column,
-    DateTime,
-    Index,
-    String,
-    Text,
-    UniqueConstraint,
-    func,
-    text,
-)
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
-from sqlmodel import Field, Relationship, SQLModel
-
+from sqlmodel import (
+    Field, 
+    SQLModel, 
+    BigInteger, 
+    DateTime, 
+    String, 
+    Text, 
+    Column, 
+    func, 
+    UniqueConstraint
+)
 from app.domains.chat import enums
-from app.domains.chat.enums import sql_in
-
-SCHEMA = "chat"
-
-
-def _created_at() -> Column:
-    return Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ChatSession(SQLModel, table=True):
     __tablename__ = "chat_session"
-    __table_args__ = (
-        Index(
-            "chat_session_user_idx",
-            "user_id",
-            text("last_message_at DESC"),
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-        {"schema": SCHEMA},
+    __table_args__ = {"schema": "chat"}
+
+    id: Optional[int] = Field(
+        default=None,
+        primary_key=True
+    )
+    user_id: int = Field(
+        sa_type=BigInteger,
+        index=True,
+        foreign_key="public.tbl_user.user_id",
+        ondelete="CASCADE",
     )
 
-    id: uuid.UUID = Field(
-        default_factory=uuid.uuid4,
+    title: Optional[str] = Field(
+        default=None,
+        max_length=200
+    )
+    last_message_at: datetime = Field(
         sa_column=Column(
-            PgUUID(as_uuid=True),
-            primary_key=True,
-            server_default=text("gen_random_uuid()"),
-        ),
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False
+        )
     )
-    user_id: str = Field(max_length=64)
-    title: str | None = Field(default=None, max_length=200)
-    message_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
-    last_message_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True))
+    created_at: datetime = Field(
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False
+        )
     )
-    created_at: datetime | None = Field(default=None, sa_column=_created_at())
-    updated_at: datetime | None = Field(default=None, sa_column=_created_at())
-    deleted_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
-
-    messages: list["ChatMessage"] = Relationship(back_populates="session", cascade_delete=True)
 
 
 class ChatMessage(SQLModel, table=True):
     __tablename__ = "chat_message"
-    __table_args__ = (
-        CheckConstraint(sql_in("role", enums.MessageRole), name="chat_message_role_chk"),
-        UniqueConstraint("session_id", "seq", name="chat_message_uk"),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": "chat"}
 
-    id: int | None = Field(default=None, primary_key=True, sa_type=BigInteger)
-    session_id: uuid.UUID = Field(
-        sa_type=PgUUID(as_uuid=True),
-        foreign_key=f"{SCHEMA}.chat_session.id",
+    id: Optional[int] = Field(
+        default=None,
+        primary_key=True,
+        sa_type=BigInteger
+    )
+    session_id: int = Field(
+        foreign_key="chat.chat_session.id",
         ondelete="CASCADE",
+        index=True
     )
-    seq: int
     role: enums.MessageRole = Field(sa_type=String(16))
-    content: str = Field(default="", sa_type=Text, sa_column_kwargs={"server_default": text("''")})
-    token_count: int | None = None
-    created_at: datetime | None = Field(default=None, sa_column=_created_at())
 
-    session: ChatSession | None = Relationship(back_populates="messages")
-    tool_calls: list["ChatToolCall"] = Relationship(back_populates="message", cascade_delete=True)
+    content: str = Field(sa_type=Text)
+
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+
+    created_at: datetime = Field(
+        sa_column=Column(
+            DateTime(timezone=True),
+            server_default=func.now(),
+            nullable=False
+        )
+    )
 
 
 class ChatToolCall(SQLModel, table=True):
     __tablename__ = "chat_tool_call"
-    __table_args__ = (
-        Index("chat_tool_call_message_idx", "message_id", "seq"),
-        Index("chat_tool_call_tool_idx", "tool_name", text("created_at DESC")),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": "chat"}
 
-    id: int | None = Field(default=None, primary_key=True, sa_type=BigInteger)
+    id: Optional[int] = Field(
+        default=None,
+        primary_key=True,
+        sa_type=BigInteger
+    )
     message_id: int = Field(
         sa_type=BigInteger,
-        foreign_key=f"{SCHEMA}.chat_message.id",
+        foreign_key="chat.chat_message.id",
         ondelete="CASCADE",
+        index=True
     )
-    seq: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     tool_name: str = Field(max_length=64)
+
     arguments: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        sa_type=JSONB
     )
-    result: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
-    chart_payload: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
-    latency_ms: int | None = None
-    is_error: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
-    created_at: datetime | None = Field(default=None, sa_column=_created_at())
+    chart_payload: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_type=JSONB
+    )
 
-    message: ChatMessage | None = Relationship(back_populates="tool_calls")
+
+
+# ── 유저 ─────
+class PersonalHistory(enums.StrEnum):
+    NO_EXPERIENCE = "NO_EXPERIENCE"
+    ENTRY_LEVEL = "ENTRY_LEVEL"
+    JUNIOR = "JUNIOR"
+    MIDDLE = "MIDDLE"
+    SENIOR = "SENIOR"
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "tbl_user"
+    __table_args__ = {"schema": "public"}
+
+    user_id: int = Field(primary_key=True, sa_type=BigInteger)
+    email: str = Field(max_length=255, unique=True)
+    name: str = Field(max_length=255)
+    password: str = Field(max_length=255)
+    personal_history: PersonalHistory = Field(sa_type=String(255))
+
+
+class UserSkill(SQLModel, table=True):
+    __tablename__ = "tbl_user_skill"
+    __table_args__ = (
+        UniqueConstraint("user_id", "skill_id", name="uk_user_skill"),
+        {"schema": "public"},
+    )
+
+    user_skill_id: int = Field(primary_key=True, sa_type=BigInteger)
+    user_id: int = Field(sa_type=BigInteger, foreign_key="public.tbl_user.user_id")
+    skill_id: int = Field(foreign_key="market.skill.id")
+
+
+class UserMajor(SQLModel, table=True):
+    __tablename__ = "tbl_user_major"
+    __table_args__ = (
+        UniqueConstraint("user_id", "field_id", name="uk_user_major"),
+        {"schema": "public"},
+    )
+
+    user_major_id: int = Field(primary_key=True, sa_type=BigInteger)
+    user_id: int = Field(sa_type=BigInteger, foreign_key="public.tbl_user.user_id")
+    field_id: int = Field(foreign_key="market.tech_field.id")

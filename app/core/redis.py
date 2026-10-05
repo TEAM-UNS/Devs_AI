@@ -1,11 +1,12 @@
 from datetime import datetime
+from typing import Optional
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
 
 from app.core.config import get_settings
 
-_pool: ArqRedis | None = None
+_pool: Optional[ArqRedis] = None
 
 
 def redis_settings() -> RedisSettings:
@@ -41,12 +42,11 @@ async def ping() -> bool:
         return False
 
 
-# ── 키 규칙 ─────────────────────────────────────────────────────────────────
-def rate_limit_key(user_id: str, now: datetime) -> str:
+def rate_limit_key(user_id: int, now: datetime) -> str:
     return f"rl:{user_id}:{now:%Y%m%d%H%M}"
 
 
-def token_budget_key(user_id: str, now: datetime) -> str:
+def token_budget_key(user_id: int, now: datetime) -> str:
     return f"budget:{user_id}:{now:%Y%m%d}"
 
 

@@ -64,4 +64,11 @@ market-csv-*.zip
 # 로컬 확인·일회성 스크립트. seed_skills.py 는 초기 셋업이라 추적한다.
 scripts/try_queries.py
 scripts/backfill_*.py
-scripts/embed_local/
+
+# 로컬 테스트용 DB 셋업. AI 서버는 테이블과 마이그레이션을 관리하지 않는다
+alembic/
+alembic.ini
+init.sql
+
+# 백엔드와의 DB 공유 경계 메모. 접속 정보가 섞이기 쉬워 올리지 않는다
+backend_sync/
