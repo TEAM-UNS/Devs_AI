@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.core.log import setup_logging
 from app.core.config import get_settings
 from app.core.database import close_engine, db_ping
 from app.core.exception.handlers import register_exception_handlers
@@ -14,6 +15,8 @@ from app.core.redis import ping as redis_ping
 
 from app.domains.chat.router import chat_router
 
+
+setup_logging()
 
 logger = logging.getLogger(__name__)
 

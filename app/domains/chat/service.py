@@ -314,7 +314,7 @@ async def stream(
     ]
 
     logger.info(
-        "chat stream 완료 — 툴 %s",
+        "chat stream 완료 — 툴: %s, input: %d, output: %d",
         tools_used or "없음",
         usage["input"],
         usage["output"],

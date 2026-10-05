@@ -18,6 +18,7 @@ from app.domains.crawler.tasks import (
 from app.domains.crawler import repository
 from app.infra.embedding.factory import build_embedder
 
+
 log = logging.getLogger(__name__)
 
 
