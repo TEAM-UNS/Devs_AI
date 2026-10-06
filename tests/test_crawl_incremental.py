@@ -230,3 +230,42 @@ async def test_new_posting_resets_the_known_page_counter(tag, tmp_path) -> None:
     # p3·p4 가 다시 기수집이라 2연속으로 p4 에서 멈춘다 (p5 는 안 받는다)
     assert stats.pages == 4
     assert stats.inserted == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  진행 통계 중간 기록 — 작업이 죽어도 거기까지는 남아야 한다
+# ═══════════════════════════════════════════════════════════════════════════
+async def test_progress_is_recorded_before_the_run_finishes(tag, tmp_path) -> None:
+    """★ 타임아웃으로 강제 취소되면 _close_run 까지 못 간다. 공고는 페이지마다
+    커밋되는데 통계만 사라지면 '그날 몇 건 들어왔나' 를 추적할 수 없다.
+    (실측 2026-10-06: 811건 적재됐는데 crawl_run 합계는 469건)
+    """
+    keyword = f"test-{tag}"
+    seen: list[int] = []
+
+    class _WatchingCrawler(StubCrawler):
+        """2페이지를 받는 시점에 crawl_run 에 이미 1페이지 분이 남아 있어야 한다."""
+
+        async def fetch_list_page(self, page: int):
+            if page == 2:
+                async with get_worker_session() as session:
+                    row = (
+                        await session.exec(
+                            text(
+                                "SELECT fetched FROM market.crawl_run "
+                                "WHERE keyword = :kw ORDER BY started_at DESC LIMIT 1"
+                            ).bindparams(kw=keyword)
+                        )
+                    ).one()
+                seen.append(row[0])
+            return await super().fetch_list_page(page)
+
+    crawler = _WatchingCrawler(tag=tag, pages=3, snapshot_dir=tmp_path)
+    async with crawler:
+        await CrawlService(crawler).crawl(pages=3, skip_seen_days=7, keyword=keyword)
+
+    assert seen, "2페이지를 받지 않았다"
+    assert seen[0] == PER_PAGE, (
+        f"1페이지를 처리한 뒤 crawl_run.fetched 가 {seen[0]} 이다. "
+        "작업이 끝나기 전에도 통계가 남아 있어야 한다"
+    )
