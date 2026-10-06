@@ -1,0 +1,90 @@
+# 홈서버 배포용. DB 는 백엔드 compose 의 postgres 를 devs-be_backend 네트워크로 쓴다
+
+name: devs-ai
+
+services:
+  ai-api:
+    build:
+      context: ../..
+      dockerfile: docker/prod/Dockerfile
+    image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
+    container_name: devs-ai-api
+    restart: unless-stopped
+    # 백엔드는 http://ai-api:8000 으로 부른다. 호스트 포트는 서버 안 디버깅용으로 localhost 에만 연다
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+    depends_on:
+      ai-redis:
+        condition: service_healthy
+      ai-ollama:
+        condition: service_healthy
+    networks:
+      - default
+      - backend
+
+  ai-worker:
+    image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
+    container_name: devs-ai-worker
+    restart: unless-stopped
+    command: ["arq", "app.worker.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+    volumes:
+      - ../../data/raw:/app/data/raw
+    healthcheck:
+      test: ["CMD", "arq", "app.worker.WorkerSettings", "--check"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 30s
+    depends_on:
+      ai-redis:
+        condition: service_healthy
+      ai-ollama:
+        condition: service_healthy
+    networks:
+      - default
+      - backend
+
+  ai-redis:
+    image: redis:7-alpine
+    container_name: devs-ai-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 최초 1회: docker compose exec ai-ollama ollama pull bge-m3
+  ai-ollama:
+    image: ollama/ollama:latest
+    container_name: devs-ai-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+networks:
+  backend:
+    external: true
+    name: devs-be_backend
+
+volumes:
+  redisdata:
+  ollama:

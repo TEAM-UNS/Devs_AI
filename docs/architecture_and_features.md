@@ -9,7 +9,9 @@
 
 ```
 ai-service/
-├── docker-compose.yml              postgres(pgvector) + redis + arq worker
+├── docker/
+│   ├── local/                      로컬 테스트용 Dockerfile · compose (postgres + redis + worker)
+│   └── prod/                       배포용 Dockerfile · compose (api + worker + redis + ollama)
 ├── pyproject.toml
 ├── .env.example
 │

@@ -8,33 +8,62 @@
 
 ## 실행
 
+로컬 개발용 compose 는 `docker/local/`, 홈서버 배포용은 `docker/prod/` 에 있다.
+
 ```bash
 cp .env.example .env      # 값 채우기
-docker compose up -d      # postgres(pgvector) + redis + arq worker
+docker compose --env-file .env -f docker/local/docker-compose.yml up -d   # postgres(pgvector) + redis + arq worker
 uv sync
 uv run alembic upgrade head   # 로컬 테스트 DB 만. alembic 은 저장소에 없다
 uv run uvicorn app.main:app --reload
 ```
 
-`docker compose up -d` 는 워커까지 띄운다(`restart: unless-stopped`). 코드를
-고치면서 워커만 따로 돌리고 싶으면 컨테이너를 멈추고 로컬에서 띄운다:
+compose 는 compose 파일이 있는 폴더의 `.env` 를 읽는다. 루트에서 `--env-file .env`
+를 빼먹으면 `POSTGRES_PORT` 같은 값이 기본값으로 떠서 엉뚱한 포트에 붙는다.
+아래 명령은 `LOCAL="--env-file .env -f docker/local/docker-compose.yml"` 로 줄여 쓴다.
+
+`up -d` 는 워커까지 띄운다(`restart: unless-stopped`). 코드를 고치면서 워커만
+따로 돌리고 싶으면 컨테이너를 멈추고 로컬에서 띄운다:
 
 ```bash
-docker compose stop worker
+docker compose $LOCAL stop worker
 uv run arq app.worker.WorkerSettings
 ```
 
 워커 이미지는 소스를 복사해 굽는다. 코드를 고쳤으면 다시 빌드해야 반영된다:
 
 ```bash
-docker compose up -d --build worker
+docker compose $LOCAL up -d --build worker
 ```
 
 로컬 테스트 DB 스키마를 처음부터 다시 만들려면:
 
 ```bash
-docker compose down -v && docker compose up -d
+docker compose $LOCAL down -v && docker compose $LOCAL up -d
 ```
+
+## 배포 (홈서버)
+
+DB 는 백엔드 compose 의 postgres 를 쓴다. `ai-api` · `ai-worker` 가 백엔드의
+`devs-be_backend` 네트워크에 붙고, 백엔드는 `http://ai-api:8000` 으로 부른다.
+redis · ollama 는 우리 compose 안에만 있다.
+
+```
+devs-be_backend   postgres · backend · ai-api · ai-worker
+devs-ai_default   ai-api · ai-worker · ai-redis · ai-ollama
+```
+
+```bash
+cp docker/prod/.env.example docker/prod/.env    # 값 채우기. 호스트는 컨테이너 기준
+docker compose -f docker/prod/docker-compose.yml up -d --build
+docker compose -f docker/prod/docker-compose.yml exec ai-ollama ollama pull bge-m3   # 최초 1회
+```
+
+- 인증은 백엔드가 맡는다. AI 서버는 외부에 열지 않고, 8000 은 `127.0.0.1` 에만
+  바인딩해 서버 안에서 디버깅할 때만 쓴다: `curl localhost:8000/health`
+- `ports` 를 `"8000:8000"` 으로 바꾸지 말 것. 모든 IP 로 열리고 도커는 ufw 도 우회한다
+- 이미지는 uid 1000 으로 돈다. 서버 유저 uid 가 다르면 `data/raw` 쓰기 권한이 깨진다
+- `EMBED_PROVIDER` 는 ollama(bge-m3) 고정. gemini 로 바뀌면 DB 벡터와 섞여 검색이 조용히 깨진다
 
 ### 초기 적재 순서 (★ 지킬 것)
 
@@ -259,7 +288,9 @@ if sys.platform == "win32":
 
 ```
 ai-service/
-├── docker-compose.yml   postgres(pgvector) + redis + arq worker
+├── docker/
+│   ├── local/           로컬 테스트용 Dockerfile · compose (postgres + redis + worker)
+│   └── prod/            배포용 Dockerfile · compose (api + worker + redis + ollama) · .env.example
 ├── pyproject.toml       의존성
 ├── app/
 │   ├── main.py          FastAPI 조립

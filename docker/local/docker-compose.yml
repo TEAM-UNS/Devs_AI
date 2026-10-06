@@ -1,7 +1,7 @@
 # ai-service 로컬 인프라 — postgres(pgvector) + redis
 #
-#   docker compose up -d
-#   docker compose logs -f postgres
+#   docker compose --env-file .env -f docker/local/docker-compose.yml up -d
+#   docker compose --env-file .env -f docker/local/docker-compose.yml logs -f postgres
 #
 # init.sql 은 최초 1회(볼륨이 비어 있을 때)만 실행된다.
 # 스키마를 다시 만들려면: docker compose down -v && docker compose up -d
@@ -31,7 +31,7 @@ services:
     shm_size: 1gb
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ../../init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     command:
       # 임베딩 검색 워크로드용 최소 튜닝 (로컬 기준)
       - "postgres"
@@ -78,8 +78,8 @@ services:
   # 같은 날 재기동은 _job_id(날짜 포함) + keep_result=86400 으로 걸러진다.
   worker:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: docker/local/Dockerfile
     image: jobstack-worker
     container_name: jobstack-worker
     restart: unless-stopped
@@ -89,7 +89,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env
+      - ../../.env
     environment:
       # ★ .env 의 값은 호스트 기준(localhost:5440 / 6390)이라 컨테이너
       #   안에서는 안 닿는다. 서비스 이름 + 내부 포트로 덮어쓴다.
@@ -103,7 +103,7 @@ services:
     volumes:
       # 수집 원본 스냅샷. 파서가 깨졌을 때 재수집 없이 재파싱하려면
       # 호스트에서도 보여야 한다.
-      - ./data/raw:/app/data/raw
+      - ../../data/raw:/app/data/raw
     # 워커가 죽으면 알 수 있게. arq 는 헬스체크 키를 redis 에 남긴다.
     stop_grace_period: 30s
 
