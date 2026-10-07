@@ -1,6 +1,6 @@
 # API 명세서
 
-**Base URL**: `http://localhost:8000` (개발) / `https://{host}` (운영)
+**Base URL**: `http://localhost:8000` (개발) / `http://ai-api:8000` (운영, `devs-be_backend` 도커 네트워크 내부)
 **Content-Type**: `application/json; charset=utf-8`
 
 ## 구현 현황
@@ -16,19 +16,23 @@
 
 ## 0. 공통
 
-### 사용자 식별
+### 호출 주체와 인증
 
-현재 인증이 없다. **요청 본문의 `user_id` 를 그대로 신뢰한다.**
+AI 서버는 **백엔드만 호출한다.** 프론트는 이 서버를 직접 부르지 않는다.
+
+- AI 서버는 외부에 열려 있지 않다. 백엔드와 같은 도커 네트워크(`devs-be_backend`)에서 `http://ai-api:8000` 으로만 닿는다
+- 호스트의 8000 은 `127.0.0.1` 에만 바인딩돼 있다. 서버 안에서 디버깅할 때만 쓴다
+- **인증은 백엔드가 맡는다.** 백엔드가 토큰을 검증하고 그 결과로 `user_id` 를 채워 보낸다
+- AI 서버는 요청 본문의 `user_id` 를 그대로 신뢰한다. 별도 토큰·헤더 검증은 없다
 
 ```json
 { "user_id": 1, "message": "..." }
 ```
 
-남의 `session_id` 로는 접근할 수 없지만(404), 남의 `user_id` 를 적으면 그 사람인 척할 수 있다.
-백엔드가 토큰을 검증하고 `user_id` 를 채워 보내주면 이 구조 그대로 유효해진다.
+남의 `session_id` 로는 접근할 수 없다(404).
 
 `user_id` 는 `public.tbl_user(user_id)` 를 가리키는 FK 다. 없는 값을 보내면 지금은
-세션 생성 단계에서 FK 위반으로 500 이 난다. 존재 검사는 백엔드 연동 때 붙인다.
+세션 생성 단계에서 FK 위반으로 500 이 난다.
 
 ### 개인화 프로필
 
@@ -103,8 +107,12 @@ X-RateLimit-Reset: 1791116400
 
 질문을 보내고 SSE 로 답변을 스트리밍 받는다. 호출은 백엔드가 하고, 백엔드가 스트림을 프론트로 넘긴다.
 
-> **프론트 주의**: 브라우저 `EventSource` 는 커스텀 헤더를 보낼 수 없다.
-> `fetch` + `ReadableStream` 으로 구현할 것.
+**백엔드 중계 시 지킬 것**
+
+- **버퍼링 없이 흘려보낸다.** 응답을 모았다가 보내면 답변이 한 번에 몰려 나온다. HTTP 클라이언트를 스트리밍 모드로 쓸 것
+- **프론트 연결이 끊기면 AI 서버로의 요청도 끊는다.** 그래야 LLM 호출이 취소된다. 안 끊으면 사용자가 떠난 뒤에도 토큰이 나간다
+- **읽기 타임아웃을 넉넉히 잡는다.** 툴 호출이 섞이면 한 턴이 수십 초 걸린다
+- 4xx 응답 본문과 `X-RateLimit-*` 헤더는 필요하면 그대로 프론트에 전달한다
 
 **Request**
 
@@ -178,9 +186,9 @@ data: {
 
 | `type` | 쓰는 툴 | 데이터 |
 |---|---|---|
-| `bar` | 인기 기술 · 연관 기술 · 수요 · 연봉 분포 | `data: [{label, value}]` |
+| `bar` | 인기 기술 · 연관 기술 · 수요 · 연봉 분포 · 기업 프로필 · 스킬 갭 | `data: [{label, value}]` |
 | `grouped_bar` | 급상승 (직전 기간 vs 최근 기간) | `series: [이름…]` + `data: [{label, values: [n, m]}]` |
-| `table` | 구간 비교 | `columns: [이름…]` + `rows: [[…]]` |
+| `table` | 구간 비교 · 기업 비교 | `columns: [이름…]` + `rows: [[…]]` |
 
 #### `token`
 답변 텍스트 조각. **마크다운이 섞여 있다**(`**굵게**`, 목록 등). 프론트에서 마크다운으로 렌더한다.
@@ -236,6 +244,7 @@ session → tool_start → graph → token × N → title → done
 ## 2. 세션 관리 — 만들지 않는다
 
 백엔드가 `chat` 스키마를 직접 읽는다. 왕복이 하나 줄어서 그렇게 정했다.
+백엔드 DB 계정에 `chat` 스키마 `SELECT` 권한이 있어야 한다.
 
 ```sql
 chat.chat_session      id · user_id · title · last_message_at · created_at
@@ -263,8 +272,13 @@ LLM 이 질문을 보고 알아서 고른다. 백엔드가 지정하지 않는�
 | `get_salary_stats` | 연봉 중앙값·사분위 | bar |
 | `get_skill_demand` | 특정 기술의 수요 분포 | bar |
 | `get_related_skills` | 함께 요구되는 기술 | bar |
-
-아직 없는 것: 기업 프로필·비교, 공고 검색, 스킬 갭 분석, 수집 현황.
+| `get_company_profile` | 기업 한 곳의 공고 수·요구 기술·경력 분포. 이름이 애매하면 후보 목록 | bar |
+| `compare_companies` | 기업 두 곳 이상의 요구 기술 비교 | table |
+| `get_similar_companies` | 스택·사업 설명이 비슷한 기업 | - |
+| `search_postings` | 설명 문장과 의미가 비슷한 공고 검색 | - |
+| `search_companies` | 업종·분야 설명으로 기업 검색 | - |
+| `analyze_skill_gap` | 보유 기술 대비 부족한 기술. 비우면 프로필의 보유 스킬을 쓴다 | bar |
+| `get_data_coverage` | 수집 기간·공고 수·직군 분포 등 데이터 범위 | - |
 
 ---
 
@@ -292,15 +306,20 @@ LLM 이 질문을 보고 알아서 고른다. 백엔드가 지정하지 않는�
 
 ## 6. 프론트 연동 참고
 
-프론트는 이 서버를 직접 부르지 않고 백엔드를 거쳐 스트림을 받는다. 아래는 SSE 수신 쪽 참고용이다.
+프론트는 이 서버를 직접 부르지 않고 **백엔드 엔드포인트**로 스트림을 받는다.
+경로·인증 헤더는 백엔드 명세를 따르고, `user_id` 는 백엔드가 토큰에서 채우므로 프론트가 보내지 않는다.
+이벤트 형식은 1절 그대로 전달된다. 아래는 SSE 수신 쪽 참고용이다.
+
+> 브라우저 `EventSource` 는 POST 와 커스텀 헤더(인증 토큰)를 보낼 수 없다.
+> `fetch` + `ReadableStream` 으로 구현할 것.
 
 ```js
 const ctrl = new AbortController();
 
-const res = await fetch("/api/chat/stream", {
+const res = await fetch("{백엔드 챗 엔드포인트}", {
   method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ user_id, session_id, message }),
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify({ session_id, message }),
   signal: ctrl.signal,
 });
 
@@ -326,9 +345,9 @@ const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 
 | 항목 | 현재 | 비고 |
 |---|---|---|
-| 인증 | 없음. 본문 `user_id` 신뢰 | 백엔드 연동 때 확정 |
-| `user_id` 존재 검사 | 없음 (FK 위반 시 500) | 인증과 같이 작업 |
+| 인증 | 백엔드 담당. AI 서버는 본문 `user_id` 신뢰 | 확정 |
+| `user_id` 존재 검사 | 없음 (FK 위반 시 500) | 다음 작업 |
 | 추천 질문 API | 미구현 | 필요해지면 추가 |
-| 수집 현황 API | 미구현 | 챗봇 툴로는 제공 예정 |
+| 수집 현황 API | 미구현 | 챗봇 툴(`get_data_coverage`)로 제공 중 |
 | 운영용 내부 API | 미구현 | 현재는 CLI(`app.cli`)로 처리 |
 | 로드맵 API | 미설계 | 챗봇 완료 후 |
