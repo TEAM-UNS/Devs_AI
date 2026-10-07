@@ -1,5 +1,3 @@
-# 배포용 이미지. api 와 worker 가 같이 쓰고 worker 는 compose 에서 command 만 바꾼다
-
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -17,7 +15,6 @@ RUN uv sync --frozen --no-dev
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-# data/raw 바인드 마운트에 쓰려면 호스트 유저 uid 와 맞아야 한다
 RUN useradd --uid 1000 --create-home app \
     && mkdir -p data/raw \
     && chown -R app:app /app
