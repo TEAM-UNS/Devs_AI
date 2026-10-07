@@ -20,7 +20,10 @@ from app.core.database import session_factory
 from app.infra.llm.client import build_chat_model
 from app.infra.embedding.factory import build_embedder
 from app.domains.chat import guard
-from app.domains.chat.exceptions import SessionNotFound
+from app.domains.chat.exceptions import (
+    SessionNotFound,
+    UserNotFound,
+)
 from app.domains.chat.enums import (
     StreamEvent,
     MessageRole,
@@ -62,6 +65,10 @@ async def open_session(
     async with session_factory() as db:
         repository = ChatRepository(db)
 
+        profile = await repository.get_profile(request.user_id)
+        if profile is None:
+            raise UserNotFound()
+
         if is_new:
             chat_session = await repository.create_session(request.user_id)
         else:
@@ -74,8 +81,6 @@ async def open_session(
 
             row = await repository.recent_messages(request.session_id)
             history = _to_messages(row)
-
-        profile = await repository.get_profile(request.user_id)
 
         await repository.add_message(
             chat_session.id,
