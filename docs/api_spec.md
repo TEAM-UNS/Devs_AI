@@ -31,8 +31,8 @@ AI 서버는 **백엔드만 호출한다.** 프론트는 이 서버를 직접 �
 
 남의 `session_id` 로는 접근할 수 없다(404).
 
-`user_id` 는 `public.tbl_user(user_id)` 를 가리키는 FK 다. 없는 값을 보내면 지금은
-세션 생성 단계에서 FK 위반으로 500 이 난다.
+`user_id` 는 `public.tbl_user(user_id)` 를 가리키는 FK 다. `tbl_user` 에 없는 값이면
+세션을 만들기 전에 **404 `USER_NOT_FOUND`** 로 끊는다. `session_id` 를 함께 보내도 유저 검사가 먼저다.
 
 ### 개인화 프로필
 
@@ -70,6 +70,7 @@ public.tbl_user_skill.skill_id     → 보유 스킬
 | HTTP | code | 설명 |
 |---|---|---|
 | 400 | `INVALID_REQUEST` | 요청 형식 오류 |
+| 404 | `USER_NOT_FOUND` | `user_id` 가 `tbl_user` 에 없음 |
 | 404 | `SESSION_NOT_FOUND` | 세션 없음 또는 타 유저 소유 |
 | 422 | `VALIDATION_ERROR` | 요청 값 검증 실패. `detail` 에 필드별 사유 |
 | 429 | `RATE_LIMITED` | 분당 요청수 또는 일일 토큰 한도 초과. `detail.reset` 은 해제 시각(epoch) |
@@ -346,7 +347,6 @@ const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 | 항목 | 현재 | 비고 |
 |---|---|---|
 | 인증 | 백엔드 담당. AI 서버는 본문 `user_id` 신뢰 | 확정 |
-| `user_id` 존재 검사 | 없음 (FK 위반 시 500) | 다음 작업 |
 | 추천 질문 API | 미구현 | 필요해지면 추가 |
 | 수집 현황 API | 미구현 | 챗봇 툴(`get_data_coverage`)로 제공 중 |
 | 운영용 내부 API | 미구현 | 현재는 CLI(`app.cli`)로 처리 |
