@@ -1,5 +1,11 @@
 name: devs-ai
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   ai-api:
     build:
@@ -8,6 +14,9 @@ services:
     image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
     container_name: devs-ai-api
     restart: unless-stopped
+    logging: *logging
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "devs-ai-api"}]'
 
     ports:
       - "127.0.0.1:8000:8000"
@@ -28,6 +37,9 @@ services:
     image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
     container_name: devs-ai-worker
     restart: unless-stopped
+    logging: *logging
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "devs-ai-worker"}]'
     command: ["arq", "app.worker.WorkerSettings"]
     env_file:
       - .env
@@ -55,6 +67,7 @@ services:
     image: redis:7-alpine
     container_name: devs-ai-redis
     restart: unless-stopped
+    logging: *logging
     command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
@@ -68,6 +81,7 @@ services:
     image: ollama/ollama:latest
     container_name: devs-ai-ollama
     restart: unless-stopped
+    logging: *logging
     volumes:
       - ollama:/root/.ollama
     healthcheck:
