@@ -9,7 +9,9 @@
 
 ```
 ai-service/
-├── docker-compose.yml              postgres(pgvector) + redis + arq worker
+├── docker/
+│   ├── local/                      로컬 테스트용 Dockerfile · compose (postgres + redis + worker)
+│   └── prod/                       배포용 Dockerfile · compose (api + worker + redis + ollama)
 ├── pyproject.toml
 ├── .env.example
 │
@@ -24,8 +26,6 @@ ai-service/
 │   │   ├── redis.py                arq redis pool · 키 이름 규칙
 │   │   ├── dependencies.py         SessionDep · RedisDep
 │   │   ├── logging.py              로깅 설정
-│   │   ├── middleware.py           CORS
-│   │   ├── security.py             (비어 있음)
 │   │   └── exception/
 │   │       ├── exceptions.py       AppException · UpstreamError
 │   │       └── handlers.py         예외 → HTTP 응답
@@ -533,8 +533,7 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 50;
 |---|---|---|
 | 인증 | 없음 | 백엔드가 토큰 검증 후 호출 |
 | 유저 식별 | 요청 본문의 `user_id` 를 그대로 신뢰 | 백엔드가 검증한 `user_id` 를 실어 보냄 |
-| `user_id` 존재 검사 | 없음 (FK 위반 시 500) | 세션 생성 전에 확인 |
-| CORS | `localhost:*` | 실제 도메인 |
+| `user_id` 존재 검사 | 세션 생성 전에 확인. 없으면 404 `USER_NOT_FOUND` | 동일 |
 | DB 권한 | 단일 유저 | `market` SELECT 전용 / `chat` 전체 / `public` 읽기 전용 |
 
 프론트가 이 서버를 직접 부르지 않고 백엔드를 거치므로, 토큰 검증은 백엔드가 맡는다.

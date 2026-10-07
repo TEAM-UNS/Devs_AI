@@ -5,7 +5,7 @@ tests/
 ├── conftest.py   fake_embedder · db 픽스처 (postgres 에 못 붙으면 skip)
 ├── fixtures/     사이트 HTML 스냅샷 (사람인 · 잡코리아)
 └── test_*.py     사이트 파서 · 본문 추출 · 스택 추출 · 청크 분할 · 증분 수집
-                  · 임베딩 파이프라인 · 임베딩 어댑터 · 태스크 · CORS
+                  · 임베딩 파이프라인 · 임베딩 어댑터 · 태스크
 ```
 
 ## 원칙

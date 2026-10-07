@@ -269,6 +269,8 @@ class CrawlService:
                         known,
                     )
 
+                await self._save_progress(run_id, stats)
+
                 if until_posted_before is not None:
                     if self._page_is_older_than(jobs, until_posted_before):
                         log.info(
@@ -472,6 +474,28 @@ class CrawlService:
                 url=job.company_url,
             )
         return company_id
+
+    async def _save_progress(self, run_id: int, stats: CrawlStats) -> None:
+        """페이지 하나를 처리할 때마다 통계를 남긴다.
+
+        ★ 작업이 타임아웃으로 강제 취소되면 _close_run 까지 못 간다. 공고는
+          페이지마다 커밋되는데 통계만 사라져서, 나중에 "그날 몇 건 들어왔나" 를
+          실행 이력으로 추적할 수 없게 된다.
+        ★ 기록 실패가 수집을 멈추게 해서는 안 된다. 통계는 부수 기록일 뿐이다.
+        """
+        try:
+            async with get_worker_session() as session:
+                await repository.update_run_progress(
+                    session,
+                    run_id,
+                    fetched=stats.fetched,
+                    inserted=stats.inserted,
+                    updated=stats.updated,
+                    skipped=stats.skipped,
+                    errors=stats.errors,
+                )
+        except Exception:  # noqa: BLE001 — 통계 기록 실패로 수집을 멈추지 않는다
+            log.warning("수집 진행 기록 실패 run_id=%s", run_id, exc_info=True)
 
     async def _close_run(self, run_id: int, stats: CrawlStats, status: enums.RunStatus) -> None:
         notes = [f"skipped_known={stats.skipped_known}"] if stats.skipped_known else []

@@ -160,10 +160,15 @@ class ChatQueries:
         size_type: Optional[CompanySize],
         career_level: Optional[CareerLevel],
         days: Optional[int],
+        window: Optional[tuple[datetime, datetime]] = None,
     ) -> list[Any]:
         conditions: list[Any] = []
 
-        if days is not None:
+        if window is not None:
+            since, until = window
+            conditions.append(ChatQueries.APPEARED_AT >= since)
+            conditions.append(ChatQueries.APPEARED_AT < until)
+        elif days is not None:
             conditions.append(ChatQueries.APPEARED_AT >= datetime.now(UTC) - timedelta(days=days))
 
         if field is not None:
@@ -191,11 +196,12 @@ class ChatQueries:
         size_type: Optional[CompanySize] = None,
         career_level: Optional[CareerLevel] = None,
         days: Optional[int] = 30,
+        window: Optional[tuple[datetime, datetime]] = None,
         top: int = 20,
         include_common: bool = False,
     ) -> PopularSkills:
         filters = self._posting_filters(
-            field=field, size_type=size_type, career_level=career_level, days=days
+            field=field, size_type=size_type, career_level=career_level, days=days, window=window,
         )
 
         skill_filters = [PostingSkill.requirement.in_(self._DEMAND)]
@@ -374,25 +380,47 @@ class ChatQueries:
         self,
         field: Optional[TechFieldCode] = None,
         window_days: int = 7,
+        window: Optional[tuple[datetime, datetime]] = None,
+        previous_window: Optional[tuple[datetime, datetime]] = None,
         min_count: int = 5,
         min_volume: int = 20,
         top: int = 10,
         include_common: bool = False,
     ) -> RisingSkills:
-        now = datetime.now(UTC)
-        recent_from = now - timedelta(days=window_days)
-        previous_from = now - timedelta(days=window_days * 2)
+        if window is not None:
+            recent_from, recent_until = window
+            previous_from, previous_until = previous_window or (
+                recent_from - (recent_until - recent_from),
+                recent_from,
+            )
+        else:
+            now = datetime.now(UTC)
+            recent_from, recent_until = now - timedelta(days=window_days), now
+            previous_from, previous_until = recent_from - timedelta(days=window_days), recent_from
 
-        base = self._posting_filters(field=field, size_type=None, career_level=None, days=None)
+        base = self._posting_filters(
+            field=field, size_type=None, career_level=None, days=None
+        )
         base.append(PostingSkill.requirement.in_(self._DEMAND))
         if not include_common:
             base.append(Skill.is_common.is_(False))
 
+        span = and_(
+            ChatQueries.APPEARED_AT >= previous_from,
+            ChatQueries.APPEARED_AT < recent_until,
+        )
+
         recent = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            ChatQueries.APPEARED_AT >= recent_from
+            and_(
+                ChatQueries.APPEARED_AT >= recent_from,
+                ChatQueries.APPEARED_AT < recent_until,
+            )
         )
         previous = func.count(func.distinct(PostingSkill.posting_id)).filter(
-            and_(ChatQueries.APPEARED_AT >= previous_from, ChatQueries.APPEARED_AT < recent_from)
+            and_(
+                ChatQueries.APPEARED_AT >= previous_from,
+                ChatQueries.APPEARED_AT < previous_until,
+            )
         )
 
         rows = (
@@ -401,13 +429,12 @@ class ChatQueries:
                 .select_from(PostingSkill)
                 .join(Skill, Skill.id == PostingSkill.skill_id)
                 .join(JobPosting, JobPosting.id == PostingSkill.posting_id)
-                .where(*base, ChatQueries.APPEARED_AT >= previous_from)
+                .where(*base, span)
                 .group_by(Skill.name)
                 .having(recent >= min_count)
             )
         ).all()
 
-        # 직전 0건은 증가율이 무한대에 가까워 급상승에서 빼고, 표본이 너무 적은 것도 거른다
         scored = sorted(
             (
                 (
@@ -435,23 +462,31 @@ class ChatQueries:
             key=lambda row: (-row[1], row[0]),
         )[:top]
 
-        window_counts = (
+        recent_postings, previous_postings = (
             await self.session.exec(
                 select(
-                    func.count().filter(ChatQueries.APPEARED_AT >= recent_from),
                     func.count().filter(
-                        and_(ChatQueries.APPEARED_AT >= previous_from, ChatQueries.APPEARED_AT < recent_from)
+                        and_(
+                            ChatQueries.APPEARED_AT >= recent_from,
+                            ChatQueries.APPEARED_AT < recent_until,
+                        )
+                    ),
+                    func.count().filter(
+                        and_(
+                            ChatQueries.APPEARED_AT >= previous_from,
+                            ChatQueries.APPEARED_AT < previous_until,
+                        )
                     ),
                 )
                 .select_from(JobPosting)
                 .where(
                     *self._posting_filters(
                         field=field, size_type=None, career_level=None, days=None
-                    )
+                    ),
+                    span,
                 )
             )
         ).one()
-        recent_postings, previous_postings = window_counts
 
         return RisingSkills(
             items=[
@@ -489,13 +524,14 @@ class ChatQueries:
         field: Optional[TechFieldCode] = None,
         top: int = 10,
         days: Optional[int] = 30,
+        window: Optional[tuple[datetime, datetime]] = None,
         include_common: bool = False,
     ) -> StacksBySegment:
         if group_by not in ("size", "career", "location"):
             raise ValueError(f"group_by 는 size · career · location 중 하나여야 합니다: {group_by}")
 
         base = self._posting_filters(
-            field=field, size_type=None, career_level=None, days=days
+            field=field, size_type=None, career_level=None, days=days, window=window
         )
         base.append(PostingSkill.requirement.in_(self._DEMAND))
         if not include_common:
@@ -584,9 +620,11 @@ class ChatQueries:
         company_id: Optional[int] = None,
         skill: Optional[str] = None,
         days: Optional[int] = None,
+        window: Optional[tuple[datetime, datetime]] = None,
     ) -> SalaryStats:
         filters = self._posting_filters(
-            field=field, size_type=size_type, career_level=career_level, days=days
+            field=field, size_type=size_type, career_level=career_level, days=days,
+            window=window
         )
         if company_id is not None:
             filters.append(JobPosting.company_id == company_id)
@@ -660,6 +698,7 @@ class ChatQueries:
         requirement: Optional[Requirement] = None,
         top: int = 10,
         days: Optional[int] = None,
+        window: Optional[tuple[datetime, datetime]] = None,
     ) -> Optional[RelatedSkills]:
         found = await self.resolve_skill_name(skill_query)
         if found is None:
@@ -668,7 +707,8 @@ class ChatQueries:
 
         grades = (requirement,) if requirement is not None else self._DEMAND
         filters = self._posting_filters(
-            field=field, size_type=None, career_level=None, days=days
+            field=field, size_type=None, career_level=None, days=days,
+            window=window
         )
 
         scope = select(PostingSkill.posting_id).select_from(PostingSkill)
@@ -1217,6 +1257,7 @@ class ChatQueries:
         company_ids: Optional[Sequence[int]] = None,
         career_level: Optional[CareerLevel] = None,
         days: Optional[int] = 90,
+        window: Optional[tuple[datetime, datetime]] = None,
         top: int = 15,
     ) -> SkillGap:
         matched: list[str] = []
@@ -1231,7 +1272,7 @@ class ChatQueries:
                 matched.append(found[1])
 
         filters = self._posting_filters(
-            field=field, size_type=None, career_level=career_level, days=days
+            field=field, size_type=None, career_level=career_level, days=days, window=window
         )
         if company_ids:
             filters.append(JobPosting.company_id.in_(list(company_ids)))

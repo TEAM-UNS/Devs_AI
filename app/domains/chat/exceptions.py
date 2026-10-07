@@ -11,6 +11,16 @@ class SessionNotFound(AppException):
         )
 
 
+class UserNotFound(AppException):
+    code = "USER_NOT_FOUND"
+
+    def __init__(self):
+        super().__init__(
+            "사용자를 찾을 수 없습니다.",
+            status_code=404
+        )
+
+
 class RateLimited(AppException):
     code = "RATE_LIMITED"
 

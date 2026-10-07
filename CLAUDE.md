@@ -22,7 +22,7 @@ IT 채용공고를 수집·분석해 AI 챗봇으로 답변하는 서비스의 �
   build_chat_model() 이 주는 LangChain 채팅 모델(Gemini)을 그대로 쓴다. 리포지토리는 인터페이스 만들지 않는다
 - Enum 은 그 값을 소유한 도메인에 둔다 (crawler/enums.py, chat/enums.py).
   모듈 상수는 두지 않는다. 설정값은 settings, 사이트 상수는 크롤러 클래스 속성으로
-- core 에는 인프라(config·database·redis·dependencies·logging·middleware)와 예외 기반 클래스만 둔다
+- core 에는 인프라(config·database·redis·dependencies·logging)와 예외 기반 클래스만 둔다
 - 예외는 core/exception/ 에 AppException · UpstreamError + 핸들러만. 구체 예외는 각 도메인이 소유한다
 
 ## 코딩 규칙

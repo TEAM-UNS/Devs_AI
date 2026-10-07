@@ -16,3 +16,10 @@ class StreamEvent(StrEnum):
     TOKEN = "token"
     DONE = "done"
     ERROR = "error"
+
+
+class Period(StrEnum):
+    WEEK = "week"
+    PREVIOUS_WEEK = "previous_week"
+    MONTH = "month"
+    PREVIOUS_MONTH = "previous_month"

@@ -736,6 +736,40 @@ async def fail_stale_runs(session: AsyncSession, *, older_than_seconds: int) -> 
     return int(result.rowcount or 0)
 
 
+async def update_run_progress(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    fetched: int,
+    inserted: int,
+    updated: int,
+    skipped: int,
+    errors: int,
+) -> None:
+    """진행 중인 수집 통계를 중간 저장한다.
+
+    ★ finish_run 은 작업이 정상 종료될 때만 불린다. 타임아웃으로 강제 취소되면
+      거기까지 못 가서 통계가 통째로 사라진다 (실측 2026-10-06: 공고 811건이
+      실제로 적재됐는데 crawl_run 합계는 469건으로 찍혔다. 죽은 작업 2건이
+      커밋한 342건이 기록되지 않았다).
+      공고는 페이지마다 커밋되므로 통계도 같은 주기로 남긴다.
+
+    ★ status · finished_at 은 건드리지 않는다. 그건 마감하는 쪽(finish_run ·
+      fail_stale_runs)의 몫이다.
+    """
+    await session.exec(
+        CrawlRun.__table__.update()
+        .where(CrawlRun.id == run_id)
+        .values(
+            fetched=fetched,
+            inserted=inserted,
+            updated=updated,
+            skipped=skipped,
+            errors=errors,
+        )
+    )
+
+
 async def finish_run(
     session: AsyncSession,
     run_id: int,

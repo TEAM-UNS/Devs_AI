@@ -9,7 +9,6 @@ from app.core.log import setup_logging
 from app.core.config import get_settings
 from app.core.database import close_engine, db_ping
 from app.core.exception.handlers import register_exception_handlers
-from app.core.middleware import register_middleware
 from app.core.redis import close_redis_pool, init_redis_pool
 from app.core.redis import ping as redis_ping
 
@@ -33,7 +32,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="jobstack-ai", lifespan=lifespan)
 
 register_exception_handlers(app)
-register_middleware(app)
 
 app.include_router(chat_router)
 

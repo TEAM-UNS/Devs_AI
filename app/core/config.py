@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     arq_max_jobs: int
     arq_job_timeout: int
 
-    cors_origins: str
-
     google_api_key: str
     typesafe_api_key: str
     gemini_embed_model: str
