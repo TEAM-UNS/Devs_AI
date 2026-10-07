@@ -296,7 +296,7 @@ ai-service/
 │   ├── main.py          FastAPI 조립
 │   ├── worker.py        arq WorkerSettings · cron
 │   ├── cli.py           crawl · embed · reparse · vector-index · skills report
-│   ├── core/            설정 · DB · redis · 의존성 · 로깅 · CORS · 예외
+│   ├── core/            설정 · DB · redis · 의존성 · 로깅 · 예외
 │   ├── infra/
 │   │   ├── embedding/   EmbedderPort ← gemini(api) · bge-m3(local) · fake
 │   │   └── llm/         build_chat_model() → Gemini 채팅 모델
