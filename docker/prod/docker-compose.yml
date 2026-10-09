@@ -84,6 +84,20 @@ services:
     logging: *logging
     volumes:
       - ollama:/root/.ollama
+    # ★ GPU 를 붙이지 않으면 CPU 로 떨어진다. 컨테이너는 기본적으로 호스트
+    #   GPU 에 접근하지 못해서, 카드가 꽂혀 있어도 설정이 없으면 못 쓴다.
+    #   실측: CPU 로 공고 23건 임베딩에 185초. 그 탓에 crawl_site 가 arq
+    #   작업 제한(600초)을 넘겨 죽고, 공고는 들어왔는데 청크가 없는 상태가
+    #   686건 생겼다.
+    #   호스트에 NVIDIA Container Toolkit 이 설치돼 있어야 한다:
+    #     sudo docker run --rm --gpus all ubuntu nvidia-smi
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s

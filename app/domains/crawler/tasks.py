@@ -96,7 +96,7 @@ async def crawl_site(
     elapsed = (datetime.now(UTC) - started).total_seconds()
     log.info("crawl_site 완료: %s/%s — %s (%.1fs)", site, keyword, stats.as_line(), elapsed)
 
-    embedded = await _embed_crawled(ctx, site, stats.changed_posting_ids)
+    queued = await _enqueue_embed(ctx, site, keyword, stats.changed_posting_ids)
 
     return {
         "site": site,
@@ -108,40 +108,32 @@ async def crawl_site(
         "skipped_known": stats.skipped_known,
         "errors": stats.errors,
         "elapsed_sec": round(elapsed, 1),
-        "embedded": embedded,
+        "embed_queued": queued,
     }
 
 
-# 수집한 자리에서 바로 임베딩한다. 실패해도 수집 결과는 남기고, 빠진 건 보충 스크립트가 채운다
-async def _embed_crawled(
-    ctx: dict[str, Any], site: str, posting_ids: list[int]
-) -> dict[str, Any]:
+async def _enqueue_embed(
+    ctx: dict[str, Any], site: str, keyword: Optional[str], posting_ids: list[int]
+) -> int:
+    """임베딩을 같은 작업에서 하지 않고 큐에 넘긴다.
+
+    ★ 전에는 수집이 끝난 자리에서 바로 임베딩했다. 그러면 둘이 arq 작업
+      제한시간 하나를 나눠 쓴다. 수집이 500초를 쓰면 임베딩에 100초만 남는다.
+      실측 2026-10-09: 수집은 success 로 닫혔는데 그 뒤 임베딩에서 제한시간을
+      넘겨 작업이 죽었고, 공고는 들어왔지만 청크가 없는 상태가 686건 생겼다.
+      crawl_run 은 success 라 겉으로는 정상으로 보였다.
+
+    ★ 따로 큐에 넣으면 각자 제한시간을 온전히 쓰고, 임베딩이 실패해도 수집은
+      영향을 받지 않는다. 재시도도 임베딩만 다시 돈다.
+    """
     if not posting_ids:
-        return {"postings": 0, "companies": 0, "errors": 0}
+        return 0
 
-    try:
-        postings = await _run_embed(
-            ctx,
-            source=site,
-            runner=lambda factory, embedder: embed_service.embed_postings(
-                factory, embedder, posting_ids=posting_ids
-            ),
-        )
-        companies = await _run_embed(
-            ctx,
-            source="companies",
-            runner=lambda factory, embedder: embed_service.embed_companies(factory, embedder),
-        )
-    except Exception:
-        log.exception("수집 직후 임베딩 실패 — site=%s 공고 %d건", site, len(posting_ids))
-        return {"postings": 0, "companies": 0, "errors": len(posting_ids), "failed": True}
-
-    return {
-        "postings": postings["postings"],
-        "companies": companies["companies"],
-        "chunks_written": postings["chunks_written"],
-        "errors": postings["errors"] + companies["errors"],
-    }
+    await ctx["redis"].enqueue_job("embed_postings", posting_ids)
+    log.info(
+        "임베딩 큐 등록: %s/%s 공고 %d건", site, keyword, len(posting_ids)
+    )
+    return len(posting_ids)
 
 
 async def embed_postings(ctx: dict[str, Any], posting_ids: list[int]) -> dict[str, Any]:

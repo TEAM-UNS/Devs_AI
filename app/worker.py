@@ -74,4 +74,13 @@ class WorkerSettings:
 
     cron_jobs: ClassVar[list] = [
         cron(crawl_dispatch, hour=8, minute=30, run_at_startup=True, max_tries=1),
+        # ★ 수집이 끝난 뒤 누락분을 줍는다. crawl_site 가 임베딩을 큐에 넘기므로
+        #   보통은 그쪽에서 끝나지만, 작업이 죽거나 Ollama 가 응답하지 않으면
+        #   공고만 들어오고 청크가 없는 상태로 남는다 (실측 2026-10-09: 686건).
+        #   그걸 매일 자동으로 메운다. DECISIONS.md 에 적혀 있던 안전망인데
+        #   실제로는 cron 에 등록돼 있지 않았다.
+        cron(embed_backfill, hour=10, minute=0, max_tries=2),
+        # ★ 기업 프로필. 전에는 수집 직후 같이 돌렸는데, 임베딩을 분리하면서
+        #   호출 지점이 사라져 여기로 옮겼다.
+        cron(embed_companies, hour=10, minute=30, max_tries=2),
     ]

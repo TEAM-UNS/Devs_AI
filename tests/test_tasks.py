@@ -144,23 +144,29 @@ def _record_embed(monkeypatch):
     return sources
 
 
-async def test_crawl_site_embeds_in_place(_patch_crawl, _record_embed) -> None:
+async def test_crawl_site_hands_embedding_to_the_queue(_patch_crawl, _record_embed) -> None:
+    """★ 같은 작업에서 임베딩까지 하면 arq 제한시간 하나를 둘이 나눠 쓴다.
+    수집이 500초를 쓰면 임베딩에 100초만 남아 거기서 죽는다 (실측 2026-10-09:
+    수집은 success 인데 청크 없는 공고가 686건 남았다). 따로 큐에 넘겨야 한다.
+    """
     _StubService.stats = _Stats([11, 22, 33])
     redis = FakeRedis()
 
     result = await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
 
-    # 큐에 넘기지 않고 그 자리에서 임베딩한다
-    assert redis.calls == []
-    assert _record_embed == ["jumpit", "companies"]
-    assert result["embedded"]["postings"] == 3
+    assert _record_embed == [], "수집 작업 안에서 임베딩을 돌렸다"
+    assert [(name, args) for name, args, _ in redis.calls] == [
+        ("embed_postings", ([11, 22, 33],))
+    ]
+    assert result["embed_queued"] == 3
 
 
-async def test_crawl_site_without_changes_skips_embedding(_patch_crawl, _record_embed) -> None:
+async def test_crawl_site_without_changes_queues_nothing(_patch_crawl, _record_embed) -> None:
     _StubService.stats = _Stats([])
     redis = FakeRedis()
 
     result = await tasks.crawl_site({"redis": redis}, "jumpit", None, 1, 7)
 
     assert _record_embed == []
-    assert result["embedded"] == {"postings": 0, "companies": 0, "errors": 0}
+    assert redis.calls == []
+    assert result["embed_queued"] == 0

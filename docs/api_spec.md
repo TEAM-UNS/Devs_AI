@@ -160,8 +160,8 @@ data: {"session_id":42,"is_new":true}
 ```
 
 #### `title`
-**새 세션일 때만.** 제목 생성이 끝나는 즉시 보낸다. 답변 스트리밍과 동시에 돌려서
-보통 답변 중간에 도착한다(요약 호출에 1.5초 안팎).
+**새 세션일 때만.** 제목 생성은 답변과 동시에 시작하지만, 보내는 건 답변 텍스트가 다 나온 뒤
+`done` 직전이다. 제목 생성에 실패하거나 스트림이 `error` 로 끝나면 오지 않는다.
 ```
 event: title
 data: {"title":"React 관련 요구 기술"}
@@ -197,6 +197,9 @@ data: {
 | `bar` | 인기 기술 · 연관 기술 · 수요 · 연봉 분포 · 기업 프로필 · 스킬 갭 | `data: [{label, value}]` |
 | `grouped_bar` | 급상승 (직전 기간 vs 최근 기간) | `series: [이름…]` + `data: [{label, values: [n, m]}]` |
 | `table` | 구간 비교 · 기업 비교 | `columns: [이름…]` + `rows: [[…]]` |
+
+`id` 는 **답변마다 `g_01` 부터 다시 센다.** 대화 전체에서 유일하지 않으므로 차트는 그 답변 말풍선에
+붙이고, 키가 필요하면 말풍선(답변) 단위로 잡는다.
 
 #### `token`
 답변 텍스트 조각. **마크다운이 섞여 있다**(`**굵게**`, 목록 등). 프론트에서 마크다운으로 렌더한다.
@@ -240,7 +243,10 @@ data: {"code":"LLM_UNAVAILABLE","message":"답변 생성에 실패했습니다. 
 session → tool_start → graph → token × N → title → done
 ```
 
-`title` 은 도착 시점에 따라 위치가 달라진다. 순서를 가정하지 말 것.
+- `session` 은 항상 맨 처음, `done` 은 정상 종료 시 마지막이다
+- `tool_start` · `graph` · `token` 은 섞여서 여러 번 온다. 툴 → 글 → 다시 툴 순서도 가능하니 가정하지 말 것
+- `title` 은 새 세션일 때만, `done` 직전에 온다
+- 오류면 `error` 가 마지막이고 `title` · `done` 은 오지 않는다
 
 ### 중간에 끊겼을 때
 
@@ -342,7 +348,7 @@ const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
 | `session` | 새 세션이면 사이드바 목록에 추가 |
 | `title` | 사이드바·헤더의 제목 갱신 |
 | `tool_start` | `label` 을 로딩 인디케이터에 표시 |
-| `graph` | `id` 로 자리를 잡아두고 차트 렌더링 |
+| `graph` | 현재 답변 말풍선에 차트 렌더링 (`id` 는 답변 안에서만 유일) |
 | `token` | 말풍선에 append (마크다운 렌더) |
 | `done` | 로딩 해제, `message_id` 보관 |
 | `error` | `recoverable` 이면 인라인 경고, 아니면 종료 처리 |
