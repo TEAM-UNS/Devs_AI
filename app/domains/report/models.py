@@ -55,9 +55,13 @@ class Report(SQLModel, table=True):
         sa_type=Date
     )
 
-    llm_report: str = Field(sa_type=Text)
+    llm_report: Optional[str] = Field(
+        default=None,
+        sa_type=Text
+    )
 
-    created_at: datetime = Field(
+    created_at: Optional[datetime] = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True),
             server_default=func.now(),
