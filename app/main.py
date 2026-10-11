@@ -13,6 +13,7 @@ from app.core.redis import close_redis_pool, init_redis_pool
 from app.core.redis import ping as redis_ping
 
 from app.domains.chat.router import chat_router
+from app.domains.report.router import report_router
 
 
 setup_logging()
@@ -34,6 +35,7 @@ app = FastAPI(title="jobstack-ai", lifespan=lifespan)
 register_exception_handlers(app)
 
 app.include_router(chat_router)
+app.include_router(report_router)
 
 
 @app.get("/health")
