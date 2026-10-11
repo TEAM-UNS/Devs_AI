@@ -63,6 +63,23 @@ services:
       - default
       - backend
 
+  ai-report-worker:
+    image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
+    container_name: devs-ai-report-worker
+    restart: unless-stopped
+    logging: *logging
+    command: [ "arq", "app.report_worker.ReportWorkerSettings" ]
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+    depends_on:
+      ai-redis:
+        condition: service_healthy
+    networks:
+      - default
+      - backend
+
   ai-redis:
     image: redis:7-alpine
     container_name: devs-ai-redis
