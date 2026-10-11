@@ -52,3 +52,11 @@ class GenerateRequest(BaseModel):
 class GenerateAccepted(BaseModel):
     week_start_date: date
     queued: bool
+
+
+class ReportReady(BaseModel):
+    week_start_date: date
+    total: int
+    generated: int
+    skipped: int
+    pending: int

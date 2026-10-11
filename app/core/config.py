@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     report_min_length: int = 30
     report_retry_attempts: int = 5
     report_retry_base_minutes: int = 5
+    report_callback_url: str = ""
+    report_callback_timeout: int = 10
 
 
 @lru_cache

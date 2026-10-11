@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, status
 
 from app.core.config import get_settings
@@ -22,13 +24,14 @@ async def generate(
     redis: RedisDep,
 ) -> GenerateAccepted:
     week = body.week_start_date.isoformat()
+    stamp = datetime.now().strftime("%Y%m%d%H%M")
 
     job = await redis.enqueue_job(
         "generate_week",
         week,
         body.force,
         _queue_name=settings.report_queue_name,
-        _job_id=f"report:{week}:{'force' if body.force else 'new'}",
+        _job_id=f"report:{week}:{stamp}",
     )
 
     return GenerateAccepted(

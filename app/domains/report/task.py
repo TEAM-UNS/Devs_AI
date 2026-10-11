@@ -1,7 +1,11 @@
+import httpx
 import logging
 from datetime import date, timedelta
 from typing import Any
 
+from arq import Retry
+
+from app.domains.report.schemas import ReportReady
 from app.domains.report.dependencies import build_report_service
 
 log = logging.getLogger(__name__)
@@ -14,12 +18,11 @@ async def generate_week(
     attempt: int = 1,
 ) -> dict[str, int]:
 
-    async with ctx["sessionmaker"]() as session:
-        service = build_report_service(session)
-        counts = await service.generate_week(
-            date.fromisoformat(week_start),
-            force
-        )
+    service = build_report_service()
+    counts = await service.generate_week(
+        date.fromisoformat(week_start),
+        force
+    )
 
     if counts["retryable"]:
         await _retry_later(
@@ -29,14 +32,62 @@ async def generate_week(
             counts["retryable"]
         )
 
+    await _notify(ctx, week_start, counts)
+
     return counts
 
 
-async def fill_missing(ctx: dict[str, Any]) -> dict[str, int]:
-    async with ctx["sessionmaker"]() as session:
-        service = build_report_service(session)
+async def _notify(
+    ctx: dict[str, Any],
+    week_start: str,
+    counts: dict[str, int]
+):
+    settings = ctx["settings"]
+    
+    if not settings.report_callback_url:
+        return
 
-        return await service.fill_missing()
+    payload = ReportReady(
+        week_start_date=date.fromisoformat(week_start),
+        total=counts["total"],
+        generated=counts["generated"],
+        skipped=counts["skipped"],
+        pending=counts["retryable"] + counts["blocked"],
+    )
+
+    await ctx["redis"].enqueue_job(
+        "notify_backend",
+        payload.model_dump(mode="json"),
+        _queue_name=settings.report_queue_name,
+    )
+
+
+async def notify_backend(ctx: dict[str, Any], payload: dict[str, Any]) -> int:
+    settings = ctx["settings"]
+    try:
+        async with httpx.AsyncClient(timeout=settings.report_callback_timeout) as client:
+            response = await client.post(settings.report_callback_url, json=payload)
+            response.raise_for_status()
+
+    except Exception as exc:
+        job_try = ctx["job_try"]
+
+        if job_try < settings.report_callback_attempts:
+            log.warning(
+                "백엔드 통지 실패 (%d회차) %s — 다시 보냅니다", job_try, exc
+            )
+            raise Retry(defer=settings.report_callback_base_seconds * 2 ** (job_try - 1))
+
+        log.error("백엔드 통지 포기 (%d회차) %s", job_try, exc)
+        raise
+
+    log.info("백엔드 통지 완료 %s", payload["week_start_date"])
+
+    return response.status_code
+
+
+async def fill_missing(ctx: dict[str, Any]) -> dict[str, int]:
+    return await build_report_service().fill_missing()
 
 
 async def _retry_later(
