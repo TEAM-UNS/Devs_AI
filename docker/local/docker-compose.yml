@@ -60,12 +60,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # ── arq 워커 (cron 상시 운영) ──────────────────────────────────────────
-  # 04:00 crawl_dispatch · 05:30 embed_backfill · 06:00 embed_companies
-  #
-  # restart: unless-stopped 라 노트북을 껐다 켜도 도커가 알아서 다시 띄운다.
-  # crawl_dispatch 는 run_at_startup=True 라 기동 시 그날 몫을 한 번 채우고,
-  # 같은 날 재기동은 _job_id(날짜 포함) + keep_result=86400 으로 걸러진다.
   worker:
     build:
       context: ../..

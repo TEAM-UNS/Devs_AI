@@ -11,16 +11,33 @@
 로컬 개발용 compose 는 `docker/local/`, 홈서버 배포용은 `docker/prod/` 에 있다.
 
 ```bash
-cp .env.example .env      # 값 채우기
-docker compose --env-file .env -f docker/local/docker-compose.yml up -d   # postgres(pgvector) + redis + arq worker
+cp .env.example .env                                  # 앱 설정. 기본 DB 는 로컬 테스트 DB
+cp docker/local/.env.example docker/local/.env        # 로컬 컨테이너 포트 · 계정
+docker compose -f docker/local/docker-compose.yml up -d   # postgres(pgvector) + redis + arq worker
 uv sync
 uv run alembic upgrade head   # 로컬 테스트 DB 만. alembic 은 저장소에 없다
 uv run uvicorn app.main:app --reload
 ```
 
-compose 는 compose 파일이 있는 폴더의 `.env` 를 읽는다. 루트에서 `--env-file .env`
-를 빼먹으면 `POSTGRES_PORT` 같은 값이 기본값으로 떠서 엉뚱한 포트에 붙는다.
-아래 명령은 `LOCAL="--env-file .env -f docker/local/docker-compose.yml"` 로 줄여 쓴다.
+env 는 세 개로 나뉜다.
+
+| 파일 | 읽는 쪽 | 내용 |
+|---|---|---|
+| `.env` | 앱 (`uv run`), 로컬 워커 컨테이너 | 앱 설정 전부. DB 는 로컬 테스트 DB(`localhost:5440/jobstack`) |
+| `docker/local/.env` | 로컬 compose | 컨테이너 포트(5440 · 6390) · DB 계정 |
+| `.env.remote` | `uv run --env-file .env.remote ...` | 원격 DB 로 붙을 때만 덮어쓰는 `DATABASE_URL` |
+
+원격(서버) DB 는 서버의 `127.0.0.1:5432` 에만 열려 있어 터널을 먼저 연다.
+
+```bash
+ssh -L 6544:localhost:5432 kanghee@100.120.163.91
+uv run --env-file .env.remote uvicorn app.main:app --reload
+```
+
+`--env-file` 로 넣은 값은 환경변수라 `.env` 보다 우선한다. 운영 DB 에 시드나 마이그레이션을
+돌리지 않도록 원격으로 붙을 때만 이 옵션을 쓴다.
+
+아래 명령은 `LOCAL="-f docker/local/docker-compose.yml"` 로 줄여 쓴다.
 
 `up -d` 는 워커까지 띄운다(`restart: unless-stopped`). 코드를 고치면서 워커만
 따로 돌리고 싶으면 컨테이너를 멈추고 로컬에서 띄운다:
@@ -281,7 +298,7 @@ if sys.platform == "win32":
 
 호스트 포트가 이미 점유돼 있으면 Docker 는 컨테이너를 띄우되 연결은
 선점한 쪽으로 가버려서, "붙긴 붙는데 스키마가 없다" 는 형태로 헷갈린다.
-포트를 바꿀 때는 `.env` 의 `POSTGRES_PORT`/`REDIS_PORT` 와
+포트를 바꿀 때는 `docker/local/.env` 의 `POSTGRES_PORT`/`REDIS_PORT` 와 루트 `.env` 의
 `DATABASE_URL`/`REDIS_URL` 을 **함께** 고칠 것.
 
 ## 구조
