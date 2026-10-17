@@ -9,6 +9,7 @@ from app.core.log import setup_logging
 from app.core.database import close_engine, engine, session_factory
 from app.core.redis import redis_settings
 from app.domains.crawler.tasks import (
+    collect_company_logos,
     crawl_dispatch,
     crawl_site,
     embed_backfill,
@@ -70,6 +71,7 @@ class WorkerSettings:
         func(embed_postings, name="embed_postings", max_tries=3),
         func(embed_backfill, name="embed_backfill", max_tries=2),
         func(embed_companies, name="embed_companies", max_tries=2),
+        func(collect_company_logos, name="collect_company_logos", max_tries=2),
     ]
 
     cron_jobs: ClassVar[list] = [
@@ -83,4 +85,8 @@ class WorkerSettings:
         # ★ 기업 프로필. 전에는 수집 직후 같이 돌렸는데, 임베딩을 분리하면서
         #   호출 지점이 사라져 여기로 옮겼다.
         cron(embed_companies, hour=10, minute=30, max_tries=2),
+        # ★ 로고 없는 회사만 골라 사람인 기업정보 페이지를 연다. 수집 직후라
+        #   평소에는 그날 새로 생긴 회사 몇 건뿐이다. 밀린 건 app.cli logos 로 비운다.
+        #   재시작마다 외부 요청이 나가면 안 되므로 run_at_startup 은 두지 않는다
+        cron(collect_company_logos, hour=11, minute=0, max_tries=2),
     ]

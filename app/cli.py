@@ -10,7 +10,7 @@ from sqlalchemy import text as sa_text
 from app.core.config import get_settings
 from app.core.log import setup_logging
 from app.core.database import close_engine, get_worker_session, session_factory
-from app.domains.crawler import embed_service
+from app.domains.crawler import embed_service, logo_service
 from app.domains.crawler.service import (
     CrawlService,
     rebuild_bodies_from_snapshots,
@@ -289,6 +289,32 @@ async def cmd_skills_report(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_logos(args: argparse.Namespace) -> int:
+    started = time.monotonic()
+    print("\n=== 회사 로고 수집 ===")
+
+    stats = await logo_service.collect_logos(
+        session_factory,
+        limit=args.limit,
+        retry_after_days=args.retry_after_days,
+    )
+
+    print(f"  {stats.as_line()}")
+    print(f"  소요          : {time.monotonic() - started:.1f}초")
+    if stats.error_messages:
+        print("  오류:")
+        for msg in stats.error_messages:
+            print(f"    - {msg}")
+
+    async with get_worker_session() as session:
+        remaining = await repository.count_companies_missing_logo(session)
+
+    print(f"\n  로고 없는 회사 : {remaining}건")
+
+    await close_engine()
+    return 0 if stats.errors == 0 else 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli", description="채용 공고 크롤러")
     parser.add_argument("-v", "--verbose", action="store_true", help="디버그 로그")
@@ -327,6 +353,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_embed.add_argument("--skills", action="store_true", help="스킬 사전 임베딩 (매번 전량)")
     p_embed.add_argument("--fake", action="store_true", help="FakeEmbedder 사용 (API 키 불필요)")
     p_embed.set_defaults(func=cmd_embed)
+
+    p_logos = sub.add_parser("logos", help="회사 로고 수집 (arq 없이)")
+    p_logos.add_argument("--limit", type=int, help="상위 N건만 (생략 시 전량)")
+    p_logos.add_argument(
+        "--retry-after-days", type=int, default=30, help="로고 없던 회사를 다시 보는 간격"
+    )
+    p_logos.set_defaults(func=cmd_logos)
 
     p_index = sub.add_parser("vector-index", help="HNSW 인덱스 생성/삭제 (적재 후 실행)")
     p_index.add_argument("--drop", action="store_true", help="생성 대신 삭제")

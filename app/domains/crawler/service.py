@@ -456,6 +456,7 @@ class CrawlService:
             name_key=name_key[:200],
             description=job.company_service_info,
             homepage=(job.company_url or None),
+            logo_url=(job.company_logo_url or None),
             founded=(job.company_establish_date or None),
             industry=job.company_industry,
             employee_count=job.company_employee_count,

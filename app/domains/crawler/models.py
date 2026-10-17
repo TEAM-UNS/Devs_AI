@@ -53,6 +53,7 @@ class Company(SQLModel, table=True):
     founded: Optional[str] = Field(default=None, max_length=20)
     revenue: Optional[int] = Field(default=None, sa_type=BigInteger)
     homepage: Optional[str] = Field(default=None, max_length=500)
+    logo_url: Optional[str] = Field(default=None, max_length=255)
     profile_embedding: Optional[list[float]] = Field(default=None, sa_type=Vector(settings.embed_dim))
     embed_hash: Optional[str] = Field(default=None, sa_type=CHAR(64))
     raw_fields: dict = Field(

@@ -10,7 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import get_settings
 from app.core.redis import crawl_job_id
-from app.domains.crawler import embed_service
+from app.domains.crawler import embed_service, logo_service
 from app.domains.crawler.config import (
     build_crawler,
     iter_crawl_jobs,
@@ -163,6 +163,18 @@ async def embed_companies(ctx: dict[str, Any], limit: Optional[int] = None) -> d
             factory, embedder, limit=limit
         ),
     )
+
+
+async def collect_company_logos(
+    ctx: dict[str, Any], limit: Optional[int] = None
+) -> dict[str, Any]:
+    stats = await logo_service.collect_logos(_sessionmaker(ctx), limit=limit)
+    return {
+        "targets": stats.targets,
+        "saved": stats.saved,
+        "missing": stats.missing,
+        "errors": stats.errors,
+    }
 
 
 async def _run_embed(

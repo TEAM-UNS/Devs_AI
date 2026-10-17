@@ -5,7 +5,7 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Optional, Any
 
-from sqlalchemy import and_, delete, func, or_, select, text, tuple_
+from sqlalchemy import and_, delete, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -37,6 +37,7 @@ async def upsert_company(
     name_key: str,
     description: Optional[str] = None,
     homepage: Optional[str] = None,
+    logo_url: Optional[str] = None,
     founded: Optional[str] = None,
     industry: Optional[str] = None,
     employee_count: Optional[int] = None,
@@ -48,6 +49,7 @@ async def upsert_company(
         name=name,
         description=description,
         homepage=(homepage or None) and homepage[:500],
+        logo_url=(logo_url or None) and logo_url[:255],
         founded=(founded or None) and founded[:20],
         industry=(industry or None) and industry[:120],
         employee_count=employee_count,
@@ -61,6 +63,7 @@ async def upsert_company(
             "name": excluded.name,
             "description": func.coalesce(excluded.description, Company.description),
             "homepage": func.coalesce(excluded.homepage, Company.homepage),
+            "logo_url": func.coalesce(excluded.logo_url, Company.logo_url),
             "founded": func.coalesce(excluded.founded, Company.founded),
             "industry": func.coalesce(excluded.industry, Company.industry),
             "employee_count": func.coalesce(excluded.employee_count, Company.employee_count),
@@ -798,3 +801,58 @@ async def finish_run(
             finished_at=datetime.now(UTC),
         )
     )
+
+
+async def companies_missing_logo(
+    session: AsyncSession,
+    *,
+    source: enums.CrawlSource,
+    limit: Optional[int] = None,
+    retry_after_days: int = 30,
+) -> list[tuple[int, str]]:
+    checked = Company.raw_fields["logo_checked_at"].astext
+    cutoff = (datetime.now(UTC) - timedelta(days=retry_after_days)).isoformat()
+
+    stmt = (
+        select(Company.id, CompanySource.source_company_id)
+        .join(CompanySource, CompanySource.company_id == Company.id)
+        .where(
+            Company.logo_url.is_(None),
+            CompanySource.source == source.value,
+            CompanySource.source_company_id.is_not(None),
+            or_(checked.is_(None), checked < cutoff),
+        )
+        .order_by(Company.id)
+        .distinct(Company.id)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    return list((await session.exec(stmt)).all())
+
+
+async def save_company_logo(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    logo_url: Optional[str],
+) -> None:
+    # 로고가 없는 회사를 매일 다시 조회하지 않도록 확인 시각을 남긴다.
+    # 파이썬에서 만든 json 문자열을 cast 하면 이중 인코딩돼서 jsonb 문자열이 되고,
+    # 객체 || 문자열 은 배열이 되어 raw_fields 가 깨진다. 객체는 DB 에서 만든다
+    stamp = func.jsonb_build_object("logo_checked_at", datetime.now(UTC).isoformat())
+    values: dict[str, Any] = {
+        "raw_fields": func.coalesce(Company.raw_fields, text("'{}'::jsonb")).op("||")(stamp)
+    }
+    if logo_url:
+        values["logo_url"] = logo_url[:255]
+
+    await session.exec(update(Company).where(Company.id == company_id).values(**values))
+
+
+async def count_companies_missing_logo(session: AsyncSession) -> int:
+    row = (
+        await session.exec(
+            select(func.count()).select_from(Company).where(Company.logo_url.is_(None))
+        )
+    ).one()
+    return row if isinstance(row, int) else row[0]

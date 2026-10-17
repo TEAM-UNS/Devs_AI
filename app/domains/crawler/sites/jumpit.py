@@ -82,6 +82,7 @@ class JumpitCrawler(BaseSiteCrawler):
             url=f"{self.WEB_BASE}/position/{job_id}",
             title=item.get("title") or "",
             company_name=item.get("companyName") or "",
+            company_logo_url=item.get("logo") or None,
             tech_stacks=[s for s in stacks if isinstance(s, str)],
             job_categories=_split_categories(item.get("jobCategory")),
             locations=[loc for loc in (item.get("locations") or []) if isinstance(loc, str)],
@@ -133,6 +134,7 @@ class JumpitCrawler(BaseSiteCrawler):
                 "detail_fetched": True,
                 "title": result.get("title") or job.title,
                 "company_name": result.get("companyName") or job.company_name,
+                "company_logo_url": result.get("logo") or job.company_logo_url,
                 "tech_stacks": stacks or job.tech_stacks,
                 "job_categories": categories or job.job_categories,
                 "locations": [location]

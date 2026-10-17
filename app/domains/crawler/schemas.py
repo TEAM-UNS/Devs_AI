@@ -62,6 +62,7 @@ class RawJob(BaseModel):
     company_url: Optional[str] = None
     company_establish_date: Optional[str] = None
     company_source_id: Optional[str] = None
+    company_logo_url: Optional[str] = None
     company_tags: list[str] = Field(default_factory=list)
     company_industry: Optional[str] = None
     company_employee_count: Optional[int] = None
