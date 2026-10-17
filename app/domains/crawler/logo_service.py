@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -50,7 +51,13 @@ class SaraminCompanyCrawler(BaseSiteCrawler):
         raise NotImplementedError("회사 로고 전용 크롤러입니다")
 
     async def fetch_logo(self, csn: str) -> Optional[str]:
-        soup = await self.get_soup(self.VIEW_URL.format(csn=csn))
+        try:
+            soup = await self.get_soup(self.VIEW_URL.format(csn=csn))
+        except httpx.HTTPStatusError as exc:
+            # 폐업이나 삭제로 없어진 회사. 다시 받아도 404 라 로고 없음으로 둔다
+            if exc.response.status_code == 404:
+                return None
+            raise
         return self.parse_logo(soup)
 
     def parse_logo(self, soup: BeautifulSoup) -> Optional[str]:
@@ -86,9 +93,10 @@ async def collect_logos(
 
     async with SaraminCompanyCrawler() as crawler:
         for company_id, csn in targets:
+            # 한 회사가 실패해도 전체를 멈추지 않는다. 도장을 찍지 않으므로 다음 실행에 다시 본다
             try:
                 logo_url = await crawler.fetch_logo(csn)
-            except CrawlError as exc:
+            except (CrawlError, httpx.HTTPStatusError) as exc:
                 stats.errors += 1
                 if len(stats.error_messages) < 5:
                     stats.error_messages.append(f"company_id={company_id}: {exc}")
