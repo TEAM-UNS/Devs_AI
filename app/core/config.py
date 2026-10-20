@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     report_retry_base_minutes: int = 5
     report_callback_url: str = ""
     report_callback_timeout: int = 10
+    report_callback_attempts: int = 5
+    report_callback_base_seconds: int = 10
 
+    roadmap_queue_name: str = "arq:queue:roadmap"
+    roadmap_job_timeout: int = 600
 
 @lru_cache
 def get_settings() -> Settings:
