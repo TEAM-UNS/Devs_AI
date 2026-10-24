@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import Settings
+from app.infra.llm.tracing import trace_config
 from app.domains.report import prompt
 from app.domains.report.exceptions import (
     ReportDataIncomplete,
@@ -174,10 +175,21 @@ class ReportService:
 
 
     async def _ask(self, facts: ReportFacts) -> str:
-        response = await self.model.ainvoke([
-            SystemMessage(content=prompt.SYSTEM),
-            HumanMessage(content=prompt.build(facts)),
-        ])
+        response = await self.model.ainvoke(
+            [
+                SystemMessage(content=prompt.SYSTEM),
+                HumanMessage(content=prompt.build(facts)),
+            ],
+            config=trace_config(
+                "report",
+                session_id=f"report-{facts.week_start_date.isoformat()}",
+                tags=["report"],
+                metadata={
+                    "report_id": facts.report_id,
+                    "major": facts.major_name,
+                },
+            ),
+        )
 
         text = response.text.strip()
 

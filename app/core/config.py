@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,6 +30,11 @@ class Settings(BaseSettings):
 
     gemini_model: str
     llm_max_retry: int = 3
+
+    langfuse_public_key: Optional[str] = None
+    langfuse_secret_key: Optional[str] = None
+    langfuse_host: Optional[str] = None
+    langfuse_environment: str = "local"
 
     chat_rate_limit_per_minute: int
     chat_daily_token_budget: int

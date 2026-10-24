@@ -18,6 +18,7 @@ from app.core.redis import get_redis
 from app.core.exception.exceptions import UpstreamError
 from app.core.database import session_factory
 from app.infra.llm.client import build_chat_model
+from app.infra.llm.tracing import trace_config
 from app.infra.embedding.factory import build_embedder
 from app.domains.chat import guard
 from app.domains.chat.exceptions import (
@@ -134,13 +135,19 @@ def _event(name: StreamEvent, payload: dict) -> ServerSentEvent:
     )
 
 
-async def _make_title(session_id: int, message: str) -> Optional[str]:
+async def _make_title(session_id: int, user_id: int, message: str) -> Optional[str]:
     try:
         response = await build_chat_model().ainvoke(
             [
                 SystemMessage(title_prompt()),
                 HumanMessage(message)
-            ]
+            ],
+            config=trace_config(
+                "chat_title",
+                session_id=str(session_id),
+                user_id=str(user_id),
+                tags=["chat"],
+            ),
         )
         title = response.text.strip()[:200]
         if not title:
@@ -174,7 +181,7 @@ async def stream(
     usage = {"input": 0, "output": 0}
 
     title_task = asyncio.create_task(
-        _make_title(session_id, message)
+        _make_title(session_id, user_id, message)
     ) if is_new else None
 
     yield _event(
@@ -191,6 +198,12 @@ async def stream(
                 profile=profile,
             ),
             stream_mode=["messages", "custom", "updates"],
+            config=trace_config(
+                "chat_turn",
+                session_id=str(session_id),
+                user_id=str(user_id),
+                tags=["chat"],
+            ),
         ):
             if mode == "updates":
                 for payload in chunk.values():
