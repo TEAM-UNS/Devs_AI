@@ -11,6 +11,7 @@ from app.core.database import (
 )
 from app.core.log import setup_logging
 from app.core.redis import redis_settings
+from app.infra.llm.tracing import shutdown_tracing
 from app.domains.report.task import (
     fill_missing,
     generate_week,
@@ -37,6 +38,7 @@ async def startup(ctx: dict[str, Any]):
 
 async def shutdown(ctx: dict[str, Any]):
     await close_engine()
+    shutdown_tracing()
     log.info("report worker 종료")
 
 
