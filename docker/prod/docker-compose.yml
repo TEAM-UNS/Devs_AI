@@ -110,6 +110,8 @@ services:
     container_name: devs-ai-ollama
     restart: unless-stopped
     logging: *logging
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"
     volumes:
       - ollama:/root/.ollama
     deploy:
