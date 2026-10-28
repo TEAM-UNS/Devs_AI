@@ -116,6 +116,7 @@ services:
     networks:
       - default
       - backend
+      - langfuse
 
   ai-redis:
     image: redis:7-alpine

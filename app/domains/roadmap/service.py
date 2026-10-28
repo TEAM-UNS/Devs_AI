@@ -21,6 +21,7 @@ from app.domains.roadmap.schemas import (
     RoadmapOutline,
     RoadmapWeek,
 )
+from app.infra.llm.tracing import trace_config
 
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class RoadmapService:
                 return {"roadmap_id": roadmap_id, "skipped": True}
 
             target_weeks = roadmap.target_weeks
+            user_id = roadmap.user_id
             field_id = roadmap.field_id
             skill_ids = list(roadmap.skill_ids or [])
 
@@ -69,7 +71,13 @@ class RoadmapService:
                     skill_ids=skill_ids,
                 )
 
-            outline = await self._outline(facts, target_weeks, additional_comment)
+            outline = await self._outline(
+                roadmap_id,
+                user_id,
+                facts,
+                target_weeks,
+                additional_comment
+            )
 
             async with self.session_factory() as session:
                 await RoadmapRepository(session).save_outline(roadmap_id, outline)
@@ -77,6 +85,7 @@ class RoadmapService:
 
             items = await self._weeks(
                 roadmap_id,
+                user_id,
                 facts,
                 outline,
                 target_weeks,
@@ -127,6 +136,8 @@ class RoadmapService:
 
     async def _outline(
         self,
+        roadmap_id: int,
+        user_id: int,
         facts: RoadmapFacts,
         target_weeks: int,
         comment: Optional[str],
@@ -140,7 +151,13 @@ class RoadmapService:
                     [
                         ("system", prompt.OUTLINE_SYSTEM),
                         ("human", prompt.build_outline(facts, target_weeks, comment)),
-                    ]
+                    ],
+                    config=self._trace(
+                        "roadmap_outline",
+                        roadmap_id,
+                        user_id,
+                        {"target_weeks": target_weeks, "attempt": attempt + 1},
+                    ),
                 )
 
                 if sorted(w.week for w in outline.weeks) != expected:
@@ -159,6 +176,7 @@ class RoadmapService:
     async def _weeks(
         self,
         roadmap_id: int,
+        user_id: int,
         facts: RoadmapFacts,
         outline: RoadmapOutline,
         target_weeks: int,
@@ -168,7 +186,15 @@ class RoadmapService:
         saved = 0
 
         for batch in self._batched(range(1, target_weeks + 1), self.CONCURRENCY):
-            weeks = await self._run_batch(week_model, facts, outline, batch, comment)
+            weeks = await self._run_batch(
+                week_model,
+                roadmap_id,
+                user_id,
+                facts,
+                outline,
+                batch,
+                comment
+            )
 
             async with self.session_factory() as session:
                 repo = RoadmapRepository(session)
@@ -182,6 +208,8 @@ class RoadmapService:
     async def _run_batch(
         self,
         week_model: Any,
+        roadmap_id: int,
+        user_id: int,
         facts: RoadmapFacts,
         outline: RoadmapOutline,
         batch: list[int],
@@ -198,7 +226,13 @@ class RoadmapService:
                         facts,
                         outline,
                         week_no,
-                        comment
+                        comment,
+                        self._trace(
+                            "roadmap_week",
+                            roadmap_id,
+                            user_id,
+                            {"week": week_no, "attempt": attempt + 1},
+                        ),
                     )
                     for week_no in pending
                 ],
@@ -228,12 +262,14 @@ class RoadmapService:
         outline: RoadmapOutline,
         week_no: int,
         comment: Optional[str],
+        config: dict[str, Any],
     ) -> RoadmapWeek:
         week = await week_model.ainvoke(
             [
                 ("system", prompt.WEEK_SYSTEM),
                 ("human", prompt.build_week(facts, outline, week_no, comment)),
-            ]
+            ],
+            config=config,
         )
 
         if len(week.days) != 7:
@@ -245,6 +281,22 @@ class RoadmapService:
 
         week.week = week_no
         return week
+
+
+    @staticmethod
+    def _trace(
+        name: str,
+        roadmap_id: int,
+        user_id: int,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        return trace_config(
+            name,
+            session_id=f"roadmap-{roadmap_id}",
+            user_id=str(user_id),
+            tags=["roadmap"],
+            metadata={"roadmap_id": roadmap_id, **metadata},
+        )
 
 
     @staticmethod

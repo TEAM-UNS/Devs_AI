@@ -11,7 +11,7 @@ from app.core.database import (
 )
 from app.core.log import setup_logging
 from app.core.redis import redis_settings
-
+from app.infra.llm.tracing import shutdown_tracing
 from app.domains.roadmap.task import fail_stale_roadmaps, generate_roadmap
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ async def startup(ctx: dict[str, Any]):
 
 async def shutdown(ctx: dict[str, Any]):
     await close_engine()
+    shutdown_tracing()
     log.info("roadmap worker 종료")
 
 
