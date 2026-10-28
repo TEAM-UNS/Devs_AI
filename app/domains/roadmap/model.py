@@ -13,6 +13,7 @@ from sqlmodel import (
     Column,
     func
 )
+from app.domains.roadmap.enums import RoadmapStatus
 
 
 class Roadmap(SQLModel, table=True):
@@ -45,9 +46,8 @@ class Roadmap(SQLModel, table=True):
         default=None,
         sa_type=JSONB
     )
-
-    status: str = Field(
-        default="pending",
+    status: RoadmapStatus = Field(
+        default=RoadmapStatus.PENDING,
         sa_type=String(20)
     )
     generated_weeks: int = Field(
