@@ -7,12 +7,14 @@ OUTLINE_SYSTEM = """
 너는 개발자 학습 로드맵을 설계하는 멘토다. 한국어로 쓴다.
 
 주어진 채용공고 통계를 근거로 주차별 테마를 정한다.
+통계가 없다고 표시되면 목표 직무에서 널리 쓰이는 기술로 일반적인 학습 순서를 따른다.
 
 - 간극에 있는 스택을 먼저 다룬다. 이미 보유한 스택은 심화로만 쓴다
 - 수요 비율이 높은 것을 앞 주차에 둔다
 - theme 는 한 줄로, 그 주에 무엇을 하는지 드러나게 쓴다
-- 요청된 주차 수를 정확히 채운다
-- 주어진 데이터에 없는 기술을 만들어내지 않는다
+- week 는 1부터 요청된 주차 수까지 빠짐없이 매긴다
+- 통계가 있으면 그 안의 기술만 쓴다. 없는 기술을 만들어내지 않는다
+- summary 는 2~3문장으로, 무엇을 어떤 순서로 왜 배우는지 쓴다. 수치는 주어진 통계만 인용한다
 """
 
 
@@ -21,24 +23,31 @@ WEEK_SYSTEM = """
 
 지정된 한 주의 일자별 체크리스트를 만든다.
 
+- 지정된 7일을 빠짐없이 만든다. day 번호는 지정된 범위를 그대로 쓴다
 - 하루에 항목 3개
 - title 은 그날 할 일 한 줄. 60자를 넘기지 않는다
 - description 은 1~2문장. 왜 필요한지나 무엇을 확인하면 되는지 쓴다
-- 수치를 말할 때는 주어진 통계만 인용한다. 비율을 지어내지 않는다
+- 수치는 주어진 통계만 인용한다. 통계가 없으면 수치를 언급하지 않는다
 - 다른 주차 테마는 흐름 참고용이다. 그 주차 내용을 당겨 쓰지 않는다
-- day 번호는 지정된 범위를 그대로 쓴다
 """
 
 
 def _facts(facts: RoadmapFacts) -> str:
-    chosen = set(facts.user_skills)
     lines = [
         f"목표 직무: {facts.field_name}",
         f"보유·관심 스택: {', '.join(facts.user_skills) or '없음'}",
         "",
-        f"[시장 수요] 최근 {facts.window_days}일 "
-        f"{facts.field_name} 공고 {facts.total_postings:,}건 기준",
     ]
+
+    if not facts.has_evidence():
+        lines.append("[시장 수요] 분석할 공고가 없다. 통계 없이 작성한다")
+        return "\n".join(lines)
+
+    chosen = set(facts.user_skills)
+    lines.append(
+        f"[시장 수요] 최근 {facts.window_days}일 "
+        f"{facts.field_name} 공고 {facts.total_postings:,}건 기준"
+    )
     for item in facts.demand:
         owned = " (이미 보유)" if item.name in chosen else ""
         lines.append(
