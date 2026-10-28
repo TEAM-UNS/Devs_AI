@@ -70,6 +70,7 @@ class RoadmapRepository:
 
 
     async def save_items(self, roadmap_id: int, weeks: list[RoadmapWeek]) -> int:
+        now = datetime.now(UTC)
         rows = [
             {
                 "roadmap_id": roadmap_id,
@@ -78,6 +79,7 @@ class RoadmapRepository:
                 "seq": seq,
                 "title": item.title[:200],
                 "description": item.description,
+                "created_at": now,
             }
             for week in weeks
             for day in week.days
