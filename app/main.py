@@ -14,6 +14,7 @@ from app.core.redis import ping as redis_ping
 
 from app.domains.chat.router import chat_router
 from app.domains.report.router import report_router
+from app.domains.roadmap.router import roadmap_router
 
 
 setup_logging()
@@ -36,6 +37,7 @@ register_exception_handlers(app)
 
 app.include_router(chat_router)
 app.include_router(report_router)
+app.include_router(roadmap_router)
 
 
 @app.get("/health")
