@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import aliased
-from sqlmodel import and_, func, select
+from sqlmodel import and_, func, select, update
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.domains.crawler.enums import Requirement
@@ -13,13 +14,17 @@ from app.domains.crawler.models import (
     SkillField,
     TechField,
 )
+from app.domains.roadmap.enums import RoadmapStatus
+from app.domains.roadmap.model import Roadmap, RoadmapItem
 from app.domains.roadmap.schemas import (
+    RoadmapOutline,
+    RoadmapWeek,
     RoadmapFacts,
     SkillDemand
 )
 
 
-class RoadmapQueries:
+class RoadmapRepository:
     WINDOW_DAYS = 90
     DEMAND_TOP = 15
     COMPANION_TOP = 5
@@ -33,6 +38,95 @@ class RoadmapQueries:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+
+
+    async def get(self, roadmap_id: int) -> Optional[Roadmap]:
+        rows = await self.session.exec(
+            select(Roadmap).where(Roadmap.id == roadmap_id)
+        )
+
+        return rows.first()
+
+
+    async def mark_generating(self, roadmap_id: int):
+        await self.session.exec(
+            update(Roadmap)
+            .where(Roadmap.id == roadmap_id)
+            .values(
+                status=RoadmapStatus.GENERATING,
+                generated_weeks=0,
+                error_message=None,
+                completed_at=None,
+            )
+        )
+
+
+    async def save_outline(self, roadmap_id: int, outline: RoadmapOutline):
+        await self.session.exec(
+            update(Roadmap)
+            .where(Roadmap.id == roadmap_id)
+            .values(outline=outline.model_dump(mode="json"))
+        )
+
+
+    async def save_items(self, roadmap_id: int, weeks: list[RoadmapWeek]) -> int:
+        rows = [
+            {
+                "roadmap_id": roadmap_id,
+                "week_no": week.week,
+                "day_no": day.day,
+                "seq": seq,
+                "title": item.title[:200],
+                "description": item.description,
+            }
+            for week in weeks
+            for day in week.days
+            for seq, item in enumerate(day.items, start=1)
+        ]
+
+        if not rows:
+            return 0
+
+        stmt = pg_insert(RoadmapItem).values(rows)
+        await self.session.exec(
+            stmt.on_conflict_do_update(
+                constraint="uk_roadmap_item",
+                set_={
+                    "title": stmt.excluded.title,
+                    "description": stmt.excluded.description,
+                },
+            )
+        )
+
+        return len(rows)
+
+
+    async def bump_generated(self, roadmap_id: int, count: int):
+        await self.session.exec(
+            update(Roadmap)
+            .where(Roadmap.id == roadmap_id)
+            .values(generated_weeks=Roadmap.generated_weeks + count)
+        )
+
+
+    async def mark_completed(self, roadmap_id: int):
+        await self.session.exec(
+            update(Roadmap)
+            .where(Roadmap.id == roadmap_id)
+            .values(
+                status=RoadmapStatus.COMPLETED,
+                completed_at=datetime.now(UTC),
+                error_message=None,
+            )
+        )
+
+
+    async def mark_failed(self, roadmap_id: int, message: str):
+        await self.session.exec(
+            update(Roadmap)
+            .where(Roadmap.id == roadmap_id)
+            .values(status=RoadmapStatus.FAILED, error_message=message)
+        )
 
 
     async def collect(
@@ -59,6 +153,19 @@ class RoadmapQueries:
             companions=companions,
             gaps=gaps,
         )
+
+
+    async def fail_stale(self, older_than_seconds: int) -> int:
+        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
+        result = await self.session.exec(
+            update(Roadmap)
+            .where(
+                Roadmap.status.in_((RoadmapStatus.PENDING, RoadmapStatus.GENERATING)),
+                Roadmap.created_at < cutoff,
+            )
+            .values(status=RoadmapStatus.FAILED, error_message="생성이 완료되지 않았습니다.")
+        )
+        return result.rowcount
 
 
     def _posting_filters(self, field_id: Optional[int]) -> list[Any]:
@@ -175,6 +282,7 @@ class RoadmapQueries:
                     anchor.skill_id.in_(skill_ids),
                     other.skill_id.notin_(skill_ids),
                     anchor.requirement.in_(self._DEMAND),
+                    other.requirement.in_(self._DEMAND),
                     Skill.is_common.is_(False),
                 )
                 .group_by(anchor_skill.name, Skill.name)
