@@ -62,6 +62,7 @@ class Settings(BaseSettings):
 
     roadmap_queue_name: str = "arq:queue:roadmap"
     roadmap_job_timeout: int = 600
+    roadmap_stale_seconds: int = 1800
 
 @lru_cache
 def get_settings() -> Settings:
