@@ -41,7 +41,7 @@ services:
     logging: *logging
     labels:
       com.datadoghq.ad.logs: '[{"source": "python", "service": "devs-ai-worker"}]'
-    command: ["arq", "app.worker.WorkerSettings"]
+    command: ["arq", "app.worker.crawl_worker.WorkerSettings"]
     env_file:
       - .env
     environment:
@@ -49,7 +49,7 @@ services:
     volumes:
       - ../../data/raw:/app/data/raw
     healthcheck:
-      test: ["CMD", "arq", "app.worker.WorkerSettings", "--check"]
+      test: ["CMD", "arq", "app.worker.crawl_worker.WorkerSettings", "--check"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -71,13 +71,13 @@ services:
     logging: *logging
     labels:
       com.datadoghq.ad.logs: '[{"source": "python", "service": "devs-ai-report-worker"}]'
-    command: [ "arq", "app.report_worker.ReportWorkerSettings" ]
+    command: [ "arq", "app.worker.report_worker.ReportWorkerSettings" ]
     env_file:
       - .env
     environment:
       TZ: Asia/Seoul
     healthcheck:
-      test: [ "CMD", "arq", "app.report_worker.ReportWorkerSettings", "--check" ]
+      test: [ "CMD", "arq", "app.worker.report_worker.ReportWorkerSettings", "--check" ]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -90,6 +90,32 @@ services:
       - default
       - backend
       - langfuse
+
+  ai-roadmap-worker:
+    image: ghcr.io/team-uns/devs-ai:${IMAGE_TAG:-latest}
+    container_name: devs-ai-roadmap-worker
+    restart: unless-stopped
+    logging: *logging
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "devs-ai-roadmap-worker"}]'
+    command: [ "arq", "app.worker.roadmap_worker.RoadmapWorkerSettings" ]
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Seoul
+    healthcheck:
+      test: [ "CMD", "arq", "app.worker.roadmap_worker.RoadmapWorkerSettings", "--check" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 30s
+    depends_on:
+      ai-redis:
+        condition: service_healthy
+    networks:
+      - default
+      - backend
 
   ai-redis:
     image: redis:7-alpine

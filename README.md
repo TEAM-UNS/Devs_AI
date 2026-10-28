@@ -44,7 +44,7 @@ uv run --env-file .env.remote uvicorn app.main:app --reload
 
 ```bash
 docker compose $LOCAL stop worker
-uv run arq app.worker.WorkerSettings
+uv run arq app.worker.crawl_worker.WorkerSettings
 ```
 
 워커 이미지는 소스를 복사해 굽는다. 코드를 고쳤으면 다시 빌드해야 반영된다:
@@ -98,7 +98,7 @@ uv run python -m app.cli vector-index             # ⑤ HNSW 인덱스
 워커로 돌리면 ③·④ 가 한 번에 끝난다. `crawl_site` 가 수집한 자리에서 바로 임베딩한다.
 
 ```bash
-caffeinate -is uv run arq app.worker.WorkerSettings
+caffeinate -is uv run arq app.worker.crawl_worker.WorkerSettings
 ```
 
 인덱스가 없어도 벡터 검색은 순차 스캔으로 동작한다. ⑤ 를 잊어도 조용히
@@ -157,7 +157,7 @@ cron 은 `crawl_dispatch` 하나다. 임베딩은 `crawl_site` 안에서 같이 
   만료되면 그 `_job_id` 를 처음 보는 것으로 취급한다. 기본값 3600 이면
   1시간 뒤 차단이 풀려서, 워커를 재시작할 때마다 같은 날 수집을 처음부터
   다시 돌린다.
-- compose `worker` 서비스가 `restart: unless-stopped` 로 떠 있다.
+- compose `crawl_worker.py` 서비스가 `restart: unless-stopped` 로 떠 있다.
 
 같은 날 두 번째 기동은 로그에 이렇게 남는다:
 
@@ -311,7 +311,7 @@ ai-service/
 ├── pyproject.toml       의존성
 ├── app/
 │   ├── main.py          FastAPI 조립
-│   ├── worker.py        arq WorkerSettings · cron
+│   ├── worker/          arq 워커 설정 · cron (crawl_worker · report_worker · roadmap_worker)
 │   ├── cli.py           crawl · embed · reparse · vector-index · skills report
 │   ├── core/            설정 · DB · redis · 의존성 · 로깅 · 예외
 │   ├── infra/

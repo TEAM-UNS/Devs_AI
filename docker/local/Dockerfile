@@ -17,4 +17,4 @@ COPY scripts/ ./scripts/
 
 RUN mkdir -p data/raw
 
-CMD ["arq", "app.worker.WorkerSettings"]
+CMD ["arq", "app.worker.crawl_worker.WorkerSettings"]
