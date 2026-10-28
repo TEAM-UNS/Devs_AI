@@ -1,6 +1,7 @@
 import logging
 from typing import Any, ClassVar
 
+from arq import cron
 from arq.worker import func
 
 from app.core.config import get_settings
@@ -11,9 +12,7 @@ from app.core.database import (
 from app.core.log import setup_logging
 from app.core.redis import redis_settings
 
-# from app.domains.roadmap.task import (
-# 
-# )
+from app.domains.roadmap.task import fail_stale_roadmaps, generate_roadmap
 
 log = logging.getLogger(__name__)
 
@@ -50,3 +49,15 @@ class RoadmapWorkerSettings:
 
     max_tries = 3
 
+    functions: ClassVar[list] = [
+        func(generate_roadmap, name="generate_roadmap", max_tries=1),
+    ]
+
+    cron_jobs: ClassVar[list] = [
+        cron(
+            fail_stale_roadmaps,
+            minute=set(range(0, 60, 5)),
+            run_at_startup=True,
+            max_tries=1
+        ),
+    ]
