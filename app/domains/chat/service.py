@@ -207,6 +207,8 @@ async def stream(
         ):
             if mode == "updates":
                 for payload in chunk.values():
+                    if not payload:
+                        continue
                     for node_message in payload.get("messages", []):
                         if isinstance(node_message, AIMessage) and node_message.usage_metadata:
                             usage["input"] += node_message.usage_metadata.get("input_tokens", 0)
@@ -246,7 +248,7 @@ async def stream(
 
             message_chunk, meta = chunk
 
-            if meta.get("langgraph_node") != "model" or not message_chunk.text:
+            if meta.get("langgraph_node") != "gemini" or not message_chunk.text:
                 continue
 
             answer.append(message_chunk.text)

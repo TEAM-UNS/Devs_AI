@@ -36,6 +36,7 @@ dependencies = [
     "logging>=0.4.9.6",
     "langfuse>=5.0.4",
     "langchain>=1.4.7",
+    "typesafe-sdk>=0.7.5",
 ]
 
 [dependency-groups]

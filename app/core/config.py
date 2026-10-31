@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     gemini_model: str
     llm_max_retry: int = 3
 
+    jev_enabled: bool = False
+    jev_timeout_seconds: float = 1.0
+    jev_confidence_min: float = 0.8
+    jev_multi_tool_max: float = 0.5
+    jev_input_usd_per_mtok: float = 0.042
+
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
     langfuse_host: Optional[str] = None
