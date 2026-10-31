@@ -11,6 +11,7 @@ from app.core.database import close_engine, db_ping
 from app.core.exception.handlers import register_exception_handlers
 from app.core.redis import close_redis_pool, init_redis_pool
 from app.core.redis import ping as redis_ping
+from app.infra.decision.jev import close_jev
 from app.infra.llm.tracing import shutdown_tracing
 
 from app.domains.chat.router import chat_router
@@ -29,6 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await close_redis_pool()
     await close_engine()
+    await close_jev()
     shutdown_tracing()
 
 
