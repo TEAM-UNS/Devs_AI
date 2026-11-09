@@ -21,14 +21,18 @@ class Settings(BaseSettings):
     arq_job_timeout: int
 
     google_api_key: str
+    anthropic_api_key: str
     typesafe_api_key: str
-    gemini_embed_model: str
 
     embed_provider: Literal["ollama", "gemini", "fake"] = "ollama"
     ollama_host: str
     embed_ollama_model: str
 
     gemini_model: str
+    gemini_embed_model: str
+    claude_model: str
+    
+    llm_max_tokens: int
     llm_max_retry: int = 3
 
     jev_enabled: bool = False
