@@ -4,7 +4,6 @@ import logging
 from itertools import islice
 from typing import Any, Iterable, Iterator, Optional
 
-from langchain_core.language_models import BaseChatModel
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -21,6 +20,7 @@ from app.domains.roadmap.schemas import (
     RoadmapOutline,
     RoadmapWeek,
 )
+from app.infra.llm.port import LLMPort
 from app.infra.llm.tracing import trace_config
 
 
@@ -34,10 +34,10 @@ class RoadmapService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        model: BaseChatModel,
+        llm: LLMPort,
     ):
         self.session_factory = session_factory
-        self.model = model
+        self.llm = llm
 
 
     async def roadmap_generator(
@@ -142,7 +142,7 @@ class RoadmapService:
         target_weeks: int,
         comment: Optional[str],
     ) -> RoadmapOutline:
-        outline_model = self.model.with_structured_output(RoadmapOutline)
+        outline_model = self.llm.structured(RoadmapOutline)
         expected = list(range(1, target_weeks + 1))
 
         for attempt in range(self.LLM_RETRY + 1):
@@ -182,7 +182,7 @@ class RoadmapService:
         target_weeks: int,
         comment: Optional[str],
     ) -> int:
-        week_model = self.model.with_structured_output(RoadmapWeek)
+        week_model = self.llm.structured(RoadmapWeek)
         saved = 0
 
         for batch in self._batched(range(1, target_weeks + 1), self.CONCURRENCY):
