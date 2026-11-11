@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import Settings
+from app.infra.llm.port import LLMPort, StopReason
 from app.infra.llm.tracing import trace_config
 from app.domains.report import prompt
 from app.domains.report.exceptions import (
@@ -36,10 +37,10 @@ class ReportService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        model: BaseChatModel,
+        llm: LLMPort,
     ):
         self.session_factory = session_factory
-        self.model = model
+        self.llm = llm
 
 
     async def generate_week(
@@ -175,7 +176,7 @@ class ReportService:
 
 
     async def _ask(self, facts: ReportFacts) -> str:
-        response = await self.model.ainvoke(
+        response = await self.llm.chat().ainvoke(
             [
                 SystemMessage(content=prompt.SYSTEM),
                 HumanMessage(content=prompt.build(facts)),
@@ -190,6 +191,9 @@ class ReportService:
                 },
             ),
         )
+
+        if self.llm.stop_reason(response) == StopReason.TRUNCATED:
+            raise ReportGenerationFailed(facts.report_id, "max_tokens 에서 잘림")
 
         text = response.text.strip()
 
