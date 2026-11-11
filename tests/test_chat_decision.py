@@ -63,13 +63,13 @@ async def test_search_uses_question_as_query(jev: dict[str, Any]) -> None:
     "tool",
     ["get_company_profile", "compare_companies", "get_similar_companies", "analyze_skill_gap"],
 )
-async def test_free_text_tools_go_to_narrow_gemini(jev: dict[str, Any], tool: str) -> None:
+async def test_free_text_tools_go_to_narrow_llm(jev: dict[str, Any], tool: str) -> None:
     jev["answers"] = _answers(tool)
 
     assert await _decide() == {"narrow_tool": tool}
 
 
-async def test_missing_required_skill_goes_to_narrow_gemini(jev: dict[str, Any]) -> None:
+async def test_missing_required_skill_goes_to_narrow_llm(jev: dict[str, Any]) -> None:
     jev["answers"] = _answers("get_skill_demand", skill="none")
 
     assert await _decide() == {"narrow_tool": "get_skill_demand"}
@@ -93,7 +93,7 @@ async def test_skill_tool_with_skill_stays_on_jev(jev: dict[str, Any]) -> None:
     ],
     ids=["low_confidence", "multi_tool", "no_tool", "jev_failed"],
 )
-async def test_uncertain_falls_back_to_gemini(jev: dict[str, Any], answers: Any) -> None:
+async def test_uncertain_falls_back_to_llm(jev: dict[str, Any], answers: Any) -> None:
     jev["answers"] = answers
 
     assert await _decide() == {}
@@ -145,4 +145,4 @@ async def test_profile_is_sent_without_name(jev: dict[str, Any]) -> None:
 def test_routed() -> None:
     call = {"name": "get_data_coverage", "args": {}, "id": "jev_1", "type": "tool_call"}
     assert jev_routed({"messages": [AIMessage(content="", tool_calls=[call])]}) == "tools"
-    assert jev_routed({"messages": [HumanMessage("안녕")]}) == "gemini"
+    assert jev_routed({"messages": [HumanMessage("안녕")]}) == "llm"
