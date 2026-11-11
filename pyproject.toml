@@ -37,6 +37,7 @@ dependencies = [
     "langfuse>=5.0.4",
     "langchain>=1.4.7",
     "typesafe-sdk>=0.7.5",
+    "langchain-anthropic>=1.7.10",
 ]
 
 [dependency-groups]

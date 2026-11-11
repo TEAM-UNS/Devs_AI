@@ -30,3 +30,12 @@ class RateLimited(AppException):
             status_code=429,
             detail={"reset": reset}
         )
+
+
+class LLMRefused(AppException):
+    code = "LLM_REFUSED"
+
+    def __init__(self):
+        super().__init__(
+            "이 질문에는 답변할 수 없습니다. 질문을 바꿔서 다시 시도해주세요."
+        )
