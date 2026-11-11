@@ -17,11 +17,12 @@ from langchain_core.messages import (
 from app.core.redis import get_redis
 from app.core.exception.exceptions import UpstreamError
 from app.core.database import session_factory
-from app.infra.llm.client import build_chat_model
+from app.infra.llm.factory import build_llm
 from app.infra.llm.tracing import trace_config
 from app.infra.embedding.factory import build_embedder
 from app.domains.chat import guard
 from app.domains.chat.exceptions import (
+    LLMRefused,
     SessionNotFound,
     UserNotFound,
 )
@@ -137,7 +138,7 @@ def _event(name: StreamEvent, payload: dict) -> ServerSentEvent:
 
 async def _make_title(session_id: int, user_id: int, message: str) -> Optional[str]:
     try:
-        response = await build_chat_model().ainvoke(
+        response = await build_llm().chat().ainvoke(
             [
                 SystemMessage(title_prompt()),
                 HumanMessage(message)
@@ -248,7 +249,7 @@ async def stream(
 
             message_chunk, meta = chunk
 
-            if meta.get("langgraph_node") != "gemini" or not message_chunk.text:
+            if meta.get("langgraph_node") != "llm" or not message_chunk.text:
                 continue
 
             answer.append(message_chunk.text)
@@ -258,32 +259,27 @@ async def stream(
             )
 
     except asyncio.CancelledError:
-        logger.info(
-            "chat stream 중단 — 연결 끊김 (%d자 생성)",
-            len("".join(answer))
-        )
+        logger.info("chat stream 중단 — 연결 끊김 (%d자 생성)", len("".join(answer)))
+        await asyncio.shield(_save_answer(session_id, answer, tool_calls, usage))
         await asyncio.shield(
-            _save_answer(
-                session_id,
-                answer,
-                tool_calls,
-                usage
-            )
-        )
-        await asyncio.shield(
-            guard.add_tokens(
-                get_redis(),
-                user_id, 
-                usage["input"] + usage["output"]
-            )
+            guard.add_tokens(get_redis(), user_id, usage["input"] + usage["output"])
         )
         raise
 
-    except UpstreamError as exc:
-        logger.warning(
-            "chat stream — LLM 장애: %s",
-            exc.message
+    except LLMRefused as exc:
+        logger.warning("chat stream — LLM 거절")
+        yield _event(
+            StreamEvent.ERROR,
+            {
+                "code": exc.code,
+                "message": exc.message,
+                "recoverable": False,
+            },
         )
+        return
+
+    except UpstreamError as exc:
+        logger.warning("chat stream — LLM 장애: %s", exc.message)
         yield _event(
             StreamEvent.ERROR,
             {
