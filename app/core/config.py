@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     gemini_model: str
     gemini_embed_model: str
     claude_model: str
+    llm_provider: Literal["claude", "gemini"] = "claude"
     
     llm_max_tokens: int
     llm_max_retry: int = 3
