@@ -15,6 +15,13 @@ def system_prompt() -> str:
     )
 
 
+def off_topic_reply() -> str:
+    return (
+        "저는 국내 IT 채용공고 데이터로 답하는 챗봇이라 그 질문은 도와드리기 어려워요.\n"
+        "예를 들어 '요즘 백엔드 신입 공고에서 많이 요구하는 기술은?' 같은 질문을 해보세요."
+    )
+
+
 def title_prompt() -> str:
     return (
         "사용자 질문을 20자 이내 한국어 제목으로 요약한다.\n"
