@@ -6,7 +6,7 @@ from typing import Any, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph import MessagesState
+from langgraph.graph import END, MessagesState
 from langgraph.runtime import get_runtime
 
 from app.domains.chat.graph.prompts import system_prompt, profile_prompt
@@ -54,7 +54,9 @@ async def call_jev(state: ChatState, config: RunnableConfig) -> dict[str, Any]:
 
 def jev_routed(state: ChatState) -> str:
     last = state["messages"][-1]
-    return "tools" if isinstance(last, AIMessage) and last.tool_calls else "llm"
+    if not isinstance(last, AIMessage):
+        return "llm"
+    return "tools" if last.tool_calls else END
 
 
 async def call_llm(state: ChatState) -> dict[str, Any]:
