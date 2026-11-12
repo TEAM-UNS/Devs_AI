@@ -21,7 +21,7 @@ def build_graph() -> CompiledStateGraph:
     builder.add_conditional_edges(
         "jev",
         jev_routed,
-        {"tools": "tools", "llm": "llm"}
+        {"tools": "tools", "llm": "llm", END: END}
     )
     builder.add_conditional_edges(
         "llm",

@@ -207,13 +207,18 @@ async def stream(
             ),
         ):
             if mode == "updates":
-                for payload in chunk.values():
+                for node, payload in chunk.items():
                     if not payload:
                         continue
                     for node_message in payload.get("messages", []):
-                        if isinstance(node_message, AIMessage) and node_message.usage_metadata:
+                        if not isinstance(node_message, AIMessage):
+                            continue
+                        if node_message.usage_metadata:
                             usage["input"] += node_message.usage_metadata.get("input_tokens", 0)
                             usage["output"] += node_message.usage_metadata.get("output_tokens", 0)
+                        if node == "jev" and not node_message.tool_calls and node_message.text:
+                            answer.append(node_message.text)
+                            yield _event(StreamEvent.TOKEN, {"text": node_message.text})
 
                 continue
                 
