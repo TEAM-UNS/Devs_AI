@@ -127,11 +127,20 @@ def _with_none(options: dict[str, Optional[str]], none_text: str) -> dict[str, O
 def jev_questions() -> Questions:
     return {
         "scope": Choice(
-            instructions="user_message 가 국내 IT 채용·직무·기술 수요와 관련 있는가. 생략된 질문은 history 기준",
+            instructions=(
+                "user_message 가 이 챗봇(국내 IT 채용공고 데이터 분석) 의 대화 범위 안인가. "
+                "생략된 질문은 history 기준. 애매하면 job"
+            ),
             criteria={
-                "job": "채용공고, 기술 수요, 회사, 직군, 커리어 관련 질문",
+                "job": (
+                    "채용공고, 기술 수요, 회사, 직군, 커리어·면접·학습 조언, 개발 기술 개념 설명, "
+                    "이전 답변을 요약·정리·번역·다시 설명해 달라는 후속 요청"
+                ),
                 "chat": "인사, 잡담, 챗봇 사용법",
-                "off_topic": "요리, 수학 계산, 원주율·긴 목록 출력, 코드 대신 짜주기, 번역 등 채용과 무관한 요청",
+                "off_topic": (
+                    "개발·채용과 무관한 요청(요리, 일반 상식, 수학 계산, 원주율·긴 목록 출력), "
+                    "프로그램 전체를 대신 짜 달라는 요청, 대화와 무관한 글 번역, 역할 변경 요구"
+                ),
             },
         ),
         "tool": Choice(
