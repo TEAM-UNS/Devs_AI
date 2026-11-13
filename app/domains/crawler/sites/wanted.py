@@ -1,7 +1,177 @@
-"""원티드 — 공개 XHR(JSON) 호출. HTML 파싱 불필요.
+# 원티드 목록과 상세 수집 (JSON API)
 
-스택 태그   있음 → requirement='tag' 로 저장
-기업정보    기업소개 · 규모
-비고        목록/상세가 모두 JSON 이라 셀렉터 깨짐 위험이 낮다.
-            응답 스키마 변경은 키 존재 검증으로 감지한다.
-"""
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Any
+
+from app.domains.crawler.schemas import RawJob
+from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseError
+
+log = logging.getLogger(__name__)
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone(timedelta(hours=9)))
+
+
+def _titles(tags: Any) -> list[str]:
+    # 태그 키가 응답마다 title, name, text 로 달라 셋 다 본다
+    result: list[str] = []
+    for tag in tags or []:
+        if isinstance(tag, dict) and (title := tag.get("title") or tag.get("name") or tag.get("text")):
+            result.append(str(title).strip())
+        elif isinstance(tag, str) and tag.strip():
+            result.append(tag.strip())
+    return result
+
+
+def _job_categories(category_tag: Any) -> list[str]:
+    if not isinstance(category_tag, dict):
+        return []
+    return _titles(category_tag.get("child_tags"))
+
+
+def _location(address: Any) -> Optional[str]:
+    if not isinstance(address, dict):
+        return None
+    if full := address.get("full_location"):
+        return str(full)
+    parts = [address.get("location"), address.get("district")]
+    joined = " ".join(str(p) for p in parts if p)
+    return joined or None
+
+
+class WantedCrawler(BaseSiteCrawler):
+    source = "wanted"
+
+    BASE = "https://www.wanted.co.kr"
+    LIST_URL = f"{BASE}/api/chaos/navigation/v1/results"
+    DETAIL_URL = f"{BASE}/api/chaos/jobs/v1/{{job_id}}/details"
+    WEB_URL = f"{BASE}/wd/{{job_id}}"
+    JOB_GROUP_DEV = 518
+    PAGE_SIZE = 20
+    _EMPLOYMENT = {
+        "regular": "정규직",
+        "contract": "계약직",
+        "intern": "인턴",
+        "freelance": "프리랜서",
+    }
+
+    referer = f"{BASE}/wdlist/{JOB_GROUP_DEV}"
+
+    def __init__(self, *, job_group_id: int = JOB_GROUP_DEV, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.job_group_id = job_group_id
+
+    async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
+        payload = await self.get_json(
+            self.LIST_URL,
+            params={
+                "job_group_id": self.job_group_id,
+                "country": "kr",
+                "job_sort": "job.latest_order",
+                "years": -1,
+                "locations": "all",
+                "limit": self.PAGE_SIZE,
+                "offset": (page - 1) * self.PAGE_SIZE,
+            },
+            snapshot=f"list_p{page}",
+        )
+        return self.parse_list(payload, page)
+
+    def parse_list(self, payload: Any, page: int) -> tuple[list[RawJob], int]:
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise ParseError(
+                f"원티드 목록 응답에 data 가 없습니다 (page={page}). "
+                f"받은 키: {list((payload or {}).keys())}"
+            )
+
+        jobs: list[RawJob] = []
+        for item in payload.get("data") or []:
+            try:
+                jobs.append(self._map_list_item(item))
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning("원티드 목록 항목 매핑 실패 id=%s: %s", item.get("id"), exc)
+        return jobs, 0
+
+    def _map_list_item(self, item: dict[str, Any]) -> RawJob:
+        job_id = item["id"]
+        company = item.get("company") or {}
+        employment = item.get("employment_type")
+        return RawJob(
+            source=self.source,
+            source_job_id=str(job_id),
+            url=self.WEB_URL.format(job_id=job_id),
+            title=item.get("position") or "",
+            company_name=(company.get("name") or "").strip(),
+            tech_stacks=_titles(item.get("skill_tags")),
+            locations=[loc for loc in [_location(item.get("address"))] if loc],
+            career_min=item.get("annual_from"),
+            career_max=item.get("annual_to"),
+            newcomer=bool(item.get("is_newbie")),
+            employment_type=self._EMPLOYMENT.get(employment or "", employment),
+            company_source_id=str(company["id"]) if company.get("id") else None,
+            raw={"list": item},
+        )
+
+    async def fetch_detail(self, job: RawJob) -> RawJob:
+        try:
+            payload = await self.get_json(
+                self.DETAIL_URL.format(job_id=job.source_job_id),
+                snapshot=f"position_{job.source_job_id}",
+            )
+        except CrawlError as exc:
+            log.warning("원티드 상세 실패 id=%s: %s", job.source_job_id, exc)
+            return job
+        return self.merge_detail(job, payload)
+
+    def merge_detail(self, job: RawJob, payload: Any) -> RawJob:
+        posting = (payload or {}).get("job")
+        if not isinstance(posting, dict):
+            log.warning("원티드 상세 응답에 job 이 없음 id=%s", job.source_job_id)
+            return job
+
+        detail = posting.get("detail") or {}
+        company = posting.get("company") or {}
+
+        responsibility = detail.get("main_tasks")
+        requirements = detail.get("requirements")
+        preferred = detail.get("preferred_points")
+
+        update: dict[str, Any] = {
+            "detail_fetched": True,
+            "title": detail.get("position") or job.title,
+            "company_name": company.get("name") or job.company_name,
+            "tech_stacks": _titles(posting.get("skill_tags")) or job.tech_stacks,
+            "job_categories": _job_categories(posting.get("category_tag")) or job.job_categories,
+            "locations": [loc for loc in [_location(posting.get("address"))] if loc]
+            or job.locations,
+            "career_min": posting.get("annual_from", job.career_min),
+            "career_max": posting.get("annual_to", job.career_max),
+            "newcomer": bool(posting.get("is_newbie", job.newcomer)),
+            "closed_at": _parse_dt(posting.get("due_time")) or job.closed_at,
+            "responsibility": responsibility,
+            "qualifications": requirements,
+            "preferred_requirements": preferred,
+            "welfares": detail.get("benefits"),
+            "recruit_process": detail.get("hire_rounds"),
+            "company_service_info": detail.get("intro"),
+            "company_industry": company.get("industry_name"),
+            "company_tags": _titles(company.get("company_tags")),
+            "company_source_id": (
+                str(company["id"]) if company.get("id") else job.company_source_id
+            ),
+            "body_extract_failed": not any((responsibility, requirements, preferred)),
+            "raw": {**job.raw, "detail": detail},
+        }
+
+        clean = {k: v for k, v in update.items() if v not in (None, "", [])}
+        clean["detail_fetched"] = True
+        clean["body_extract_failed"] = update["body_extract_failed"]
+        return job.merged(clean)

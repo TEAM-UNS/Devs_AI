@@ -22,8 +22,6 @@ dependencies = [
     "anthropic>=0.40",
     "langgraph>=0.2.50",
     "langgraph-checkpoint-postgres>=2.0",
-    # --- embedding ---
-    "voyageai>=0.3",
     # --- worker ---
     "arq>=0.26",
     # --- crawler ---
@@ -32,6 +30,14 @@ dependencies = [
     "lxml>=5.3",
     "tenacity>=9.0",
     "pyyaml>=6.0",
+    "ollama>=0.6.2",
+    "google>=3.0.0",
+    "langchain-google-genai>=4.4.0",
+    "logging>=0.4.9.6",
+    "langfuse>=5.0.4",
+    "langchain>=1.4.7",
+    "typesafe-sdk>=0.7.5",
+    "langchain-anthropic>=1.7.10",
 ]
 
 [dependency-groups]
@@ -40,7 +46,6 @@ dev = [
     "pytest-asyncio>=0.24",
     "respx>=0.21",
     "ruff>=0.8",
-    "import-linter>=2.1",
 ]
 
 [tool.uv]
@@ -50,51 +55,13 @@ package = false
 line-length = 100
 target-version = "py313"
 
+[tool.ruff.lint]
+# 진짜 오류만 본다. import 정렬(I) · 줄바꿈 · 코드 스타일 계열은 켜지 않는다.
+#   E9  구문 오류 · 파일 입출력 오류
+#   F   미정의 이름(F821) · 미사용 import(F401) 같은 실제 버그
+# 명시하지 않으면 기본값 E4,E7,E9,F 가 켜져 스타일 지적이 섞인다.
+select = ["E9", "F"]
+ignore = ["I001"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  의존 규칙 R1~R4 강제 (lint-imports)
-#  CI: `lint-imports` 를 ruff 와 함께 실행
-# ─────────────────────────────────────────────────────────────────────────────
-[tool.importlinter]
-root_package = "app"
-
-# R1 — market 은 아무 도메인도 import 하지 않는다
-[[tool.importlinter.contracts]]
-name = "R1: market is independent"
-type = "forbidden"
-source_modules = ["app.domains.market"]
-forbidden_modules = ["app.domains.crawler", "app.domains.chat", "app.llm"]
-
-# R2 — crawler 는 chat 을 모른다
-[[tool.importlinter.contracts]]
-name = "R2: crawler does not touch chat"
-type = "forbidden"
-source_modules = ["app.domains.crawler"]
-forbidden_modules = ["app.domains.chat"]
-
-# R3 — chat 은 market.queries(읽기)만. models/repository 직접 참조 금지
-[[tool.importlinter.contracts]]
-name = "R3: chat reads market through queries only"
-type = "forbidden"
-source_modules = ["app.domains.chat"]
-forbidden_modules = [
-    "app.domains.market.models",
-    "app.domains.market.repository",
-    "app.domains.crawler",
-]
-
-# R4 — port 는 어댑터를 모른다
-[[tool.importlinter.contracts]]
-name = "R4: port knows no adapter"
-type = "forbidden"
-source_modules = ["app.llm.port"]
-forbidden_modules = ["app.llm.chat_adapter", "app.llm.embed_adapter", "app.llm.fake"]
-
-# core 는 도메인을 모른다
-[[tool.importlinter.contracts]]
-name = "core is the bottom layer"
-type = "forbidden"
-source_modules = ["app.core"]
-forbidden_modules = ["app.domains", "app.llm"]

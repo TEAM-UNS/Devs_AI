@@ -1,11 +1,43 @@
-"""메타 툴 — 데이터 커버리지. → market.queries
+from typing import Any
 
-get_data_coverage()
-    수집 기간(최초~최종) · 총 공고수 · 분야별 분포 · 사이트별 분포
-    · 최종 수집시각 (crawl_run 기준)
+from langchain_core.tools import tool
+from langgraph.config import get_stream_writer
+from langgraph.runtime import get_runtime
 
-용도
-    - 시계열 질문("작년 대비") 전에 선행 호출해 범위를 고지하게 한다
-    - "1년 이상 비교" 처럼 데이터가 없는 요청은 한계를 인정하고 답한다
-    - 공고 실시간 유효성은 보장하지 않으므로 수집 시각을 함께 안내한다
-"""
+from app.domains.chat.tools.context import ToolContext
+
+
+@tool(
+    "get_data_coverage",
+    description=(
+        "우리가 가진 데이터의 범위를 돌려준다. 수집 기간·공고 수·직군 분포다. "
+        "'데이터가 얼마나 있냐', '믿을 만하냐' 같은 질문이나 답변의 신뢰도를 밝힐 때 쓴다."
+    ),
+)
+async def get_data_coverage() -> dict[str, Any]:
+    writer = get_stream_writer()
+    writer(
+        {
+            "type": "tool_start",
+            "tool": "get_data_coverage",
+            "label": "데이터 범위를 확인하고 있어요",
+            "arguments": {},
+        }
+    )
+
+    runtime = get_runtime(ToolContext)
+    async with runtime.context.queries() as queries:
+        result = await queries.data_coverage()
+
+    return {
+        "posted_from": str(result.posted_from),
+        "posted_to": str(result.posted_to),
+        "total_postings": result.total_postings,
+        "active_postings": result.active_postings,
+        "company_count": result.company_count,
+        "by_field": result.by_field,
+        "image_only_ratio": result.image_only_ratio,
+        "salary_disclosure_rate": result.salary_disclosure_rate,
+        "unclassified_postings": result.unclassified_postings,
+        "last_crawl_at": str(result.last_crawl_at) if result.last_crawl_at else None,
+    }

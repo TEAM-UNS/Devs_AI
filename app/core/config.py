@@ -1,126 +1,85 @@
-"""환경설정 (pydantic-settings).
-
-.env 를 읽어 Settings 하나로 노출한다. get_settings() 는 lru_cache 이므로
-프로세스당 1회만 파싱된다.
-
-주의: EMBED_DIM 은 init.sql 의 vector(N) · enums.EMBEDDING_DIM 과 반드시
-같아야 한다. 어긋나면 INSERT 단계에서야 터지므로 기동 시점에 막는다.
-"""
-
-from __future__ import annotations
-
 from functools import lru_cache
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Optional
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-from app.core.enums import EMBEDDING_DIM
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
+        env_file=Path(__file__).resolve().parents[2] / ".env",
+        extra="ignore"
     )
 
-    # ── db ──────────────────────────────────────────────────────────────────
-    database_url: str = "postgresql+psycopg://jobstack:jobstack@localhost:5432/jobstack"
-    # 운영에서 챗봇만 다른 롤(ai_chat)로 붙일 때 사용. 없으면 database_url 재사용.
-    chat_database_url: str | None = None
-    db_echo: bool = False
-    db_pool_size: int = 10
-    db_max_overflow: int = 5
+    database_url: str
+    db_echo: bool
+    db_pool_size: int
+    db_max_overflow: int
 
-    # ── worker ──────────────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
-    arq_max_jobs: int = 4
-    arq_job_timeout: int = 600
+    redis_url: str
+    arq_max_jobs: int
+    arq_job_timeout: int
 
-    # ── auth ────────────────────────────────────────────────────────────────
-    auth_mode: Literal["dev", "jwt"] = "dev"
-    dev_user_id: str = "dev-user-1"
-    jwt_algorithm: str = "RS256"
-    jwt_issuer: str = ""
-    jwt_audience: str = ""
-    jwt_public_key: str = ""
-    jwt_public_key_path: str = ""
-    jwks_url: str = ""
+    google_api_key: str
+    anthropic_api_key: str
+    typesafe_api_key: str
 
-    # ── cors ────────────────────────────────────────────────────────────────
-    # 콤마 구분 문자열. 리스트가 필요하면 cors_origin_list 를 쓴다.
-    cors_origins: str = ""
+    embed_provider: Literal["ollama", "gemini", "fake"] = "ollama"
+    ollama_host: str
+    embed_ollama_model: str
 
-    # ── llm ─────────────────────────────────────────────────────────────────
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-opus-5"
-    llm_max_tokens: int = 16000
-    use_fake_llm: bool = False
+    gemini_model: str
+    gemini_embed_model: str
+    claude_model: str
+    llm_provider: Literal["claude", "gemini"] = "claude"
+    
+    llm_max_tokens: int
+    llm_max_retry: int = 3
 
-    # ── embedding ───────────────────────────────────────────────────────────
-    voyage_api_key: str = ""
-    embed_model: str = "voyage-3-large"
-    embed_dim: int = EMBEDDING_DIM
+    jev_enabled: bool = False
+    jev_timeout_seconds: float = 1.0
+    jev_confidence_min: float = 0.8
+    jev_multi_tool_max: float = 0.5
+    jev_input_usd_per_mtok: float = 0.042
+    jev_off_topic_min: float = 0.9
+
+    langfuse_public_key: Optional[str] = None
+    langfuse_secret_key: Optional[str] = None
+    langfuse_host: Optional[str] = None
+    langfuse_environment: str = "local"
+
+    chat_rate_limit_per_minute: int
+    chat_daily_token_budget: int
+
+    embed_dim: int = 1024
     embed_batch_size: int = 96
-    embed_max_retry: int = 3
+    embed_max_retry: int = 1
     embed_backfill_limit: int = 500
 
-    # ── chat guard ──────────────────────────────────────────────────────────
-    chat_recursion_limit: int = 8
-    chat_rate_limit_per_min: int = 20
-    chat_daily_token_budget: int = 200_000
-    chat_history_token_budget: int = 12_000
+    embed_rpm: int = 0
+    embed_tpm: int = 0
 
-    # ── crawler ─────────────────────────────────────────────────────────────
     crawl_delay_seconds: float = 1.0
     crawl_max_delay_seconds: float = 20.0
     crawl_delay_factor: float = 1.6
     crawl_max_retry: int = 3
-    crawl_snapshot_dir: str = "./var/snapshots"
+    crawl_skip_seen_days: int = 7
     crawl_user_agent: str = "jobstack-bot/0.1"
-    crawl_keywords: str = ""
 
-    # ── 파생 값 ─────────────────────────────────────────────────────────────
-    @property
-    def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+    report_job_timeout: int = 1800
+    report_queue_name: str = "arq:queue:report"
+    report_backfill_weeks: int = 4
+    report_min_length: int = 30
+    report_retry_attempts: int = 5
+    report_retry_base_minutes: int = 5
+    report_callback_url: str = ""
+    report_callback_timeout: int = 10
+    report_callback_attempts: int = 5
+    report_callback_base_seconds: int = 10
 
-    @property
-    def crawl_keyword_list(self) -> list[str]:
-        return [k.strip() for k in self.crawl_keywords.split(",") if k.strip()]
-
-    @property
-    def effective_chat_database_url(self) -> str:
-        """챗봇용 접속 URL. 미설정이면 기본 URL 을 그대로 쓴다(개발)."""
-        return self.chat_database_url or self.database_url
-
-    @property
-    def is_dev_auth(self) -> bool:
-        return self.auth_mode == "dev"
-
-    # ── 검증 ────────────────────────────────────────────────────────────────
-    @model_validator(mode="after")
-    def _check_embed_dim(self) -> Settings:
-        if self.embed_dim != EMBEDDING_DIM:
-            raise ValueError(
-                f"EMBED_DIM={self.embed_dim} 이지만 스키마는 vector({EMBEDDING_DIM}) 입니다. "
-                "차원을 바꾸려면 컬럼 타입 변경 + 전체 재임베딩이 필요합니다."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _check_jwt_key(self) -> Settings:
-        if self.auth_mode == "jwt" and not (
-            self.jwt_public_key or self.jwt_public_key_path or self.jwks_url
-        ):
-            raise ValueError(
-                "AUTH_MODE=jwt 인데 공개키가 없습니다. "
-                "JWT_PUBLIC_KEY · JWT_PUBLIC_KEY_PATH · JWKS_URL 중 하나를 설정하세요."
-            )
-        return self
-
+    roadmap_queue_name: str = "arq:queue:roadmap"
+    roadmap_job_timeout: int = 600
+    roadmap_stale_seconds: int = 1800
 
 @lru_cache
 def get_settings() -> Settings:

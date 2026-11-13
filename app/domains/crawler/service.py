@@ -1,18 +1,516 @@
-"""수집 오케스트레이션: sites → extractor/chunker → market.repository (R2).
+# 사이트 수집 결과를 DB 에 적재하는 수집 서비스
 
-흐름
-    1. 사이트 어댑터로 목록 수집 → 상세 수집
-    2. 기업 정규화(name_key) → upsert_company + company_source
-    3. content_hash 비교
-         동일  → collected_at 만 갱신하고 재추출 생략 (skipped++)
-         변경  → extractor 로 스킬 추출 → upsert_posting + replace_posting_skills
-    4. 연봉 파싱 (salary_raw → min/max/type)
-    5. 이미지 공고 판별 (본문 200자 미만 + 이미지 존재 → body_is_image=true)
-    6. 변경분 posting_id 를 반환 → tasks 가 embed_postings 를 enqueue
+import asyncio
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
-예외
-    - 셀렉터 미스: 경고 로그 후 해당 사이트만 중단, 다른 사이트는 계속
-    - 상세 3중 폴백(JSON-LD → 라벨-값 → CSS) 전부 실패: 목록 데이터만 저장,
-      description=null
-    - 기업 페이지 없음: 공고에서 얻은 정보만 사용
-"""
+from bs4 import BeautifulSoup
+
+from app.core.database import get_worker_session
+from app.domains.crawler import extractor
+from app.domains.crawler.chunker import build_chunks
+from app.domains.crawler.extractor import SkillMatcher
+from app.domains.crawler.schemas import RawJob
+from app.domains.crawler.sites.base import (
+    BaseSiteCrawler,
+    CrawlError,
+    ParseError,
+    SelectorBrokenError,
+)
+from app.domains.crawler import enums, repository
+from typing import Optional
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class CrawlStats:
+    fetched: int = 0
+    inserted: int = 0
+    updated: int = 0
+    skipped: int = 0
+    skipped_known: int = 0
+    reextracted: int = 0
+    errors: int = 0
+    pages: int = 0
+    total_available: int = 0
+    error_messages: list[str] = field(default_factory=list)
+    changed_posting_ids: list[int] = field(default_factory=list)
+
+    def as_line(self) -> str:
+        return (
+            f"fetched={self.fetched} inserted={self.inserted} updated={self.updated} "
+            f"skipped={self.skipped} skipped_known={self.skipped_known} "
+            f"reextracted={self.reextracted} errors={self.errors}"
+        )
+
+
+@dataclass
+class ReparseStats:
+    postings: int = 0
+    skills_linked: int = 0
+    without_skills: int = 0
+    field_updated: int = 0
+    body_failed: int = 0
+    reembed_queued: int = 0
+    errors: int = 0
+
+    def as_line(self) -> str:
+        return (
+            f"postings={self.postings} skills_linked={self.skills_linked} "
+            f"without_skills={self.without_skills} field_updated={self.field_updated} "
+            f"body_failed={self.body_failed} reembed_queued={self.reembed_queued} "
+            f"errors={self.errors}"
+        )
+
+
+async def _chunks_changed(session, posting_id: int, description: Optional[str]) -> bool:
+    # content_hash 는 원문 기준이라 파서를 고쳐도 안 바뀐다. 그래서 청크로 비교한다
+    stored = await repository.get_chunk_state(session, posting_id)
+    current = {(c.section.value, c.seq): c.chunk_hash for c in build_chunks(description)}
+    return stored != current
+
+
+async def reparse_skills(*, source: Optional[str] = None, limit: Optional[int] = None) -> ReparseStats:
+    stats = ReparseStats()
+    stale: list[int] = []
+
+    async with get_worker_session() as session:
+        matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
+        field_ids = await repository.get_field_ids(session)
+        targets = await repository.iter_postings_for_reparse(session, source=source, limit=limit)
+
+    log.info("재추출 대상 %d건 (사전 %d스킬)", len(targets), len(matcher.entries))
+
+    async with get_worker_session() as session:
+        for posting_id, description, tags, raw_fields, old_field_id, title in targets:
+            try:
+                async with session.begin_nested():
+                    hits = matcher.extract(description=description, tags=tags)
+                    await repository.replace_posting_skills(
+                        session,
+                        posting_id,
+                        [(h.skill_id, h.requirement, h.mentions) for h in hits],
+                    )
+
+                    tech_field = extractor.map_tech_field(
+                        raw_fields.get("job_categories") or [], title
+                    )
+                    new_field_id = field_ids.get(tech_field.value) if tech_field else None
+                    if new_field_id != old_field_id:
+                        await repository.update_posting_field(session, posting_id, new_field_id)
+                        stats.field_updated += 1
+
+                    if not extractor.is_valid_body(description, matcher):
+                        if await repository.mark_body_extract_failed(session, posting_id):
+                            stats.body_failed += 1
+
+                    if await _chunks_changed(session, posting_id, description):
+                        stale.append(posting_id)
+            except Exception:
+                log.exception("재추출 실패 posting_id=%s", posting_id)
+                stats.errors += 1
+                continue
+
+            stats.postings += 1
+            stats.skills_linked += len(hits)
+            if not hits:
+                stats.without_skills += 1
+
+        # 청크가 바뀐 공고는 embed_hash 를 비워 재임베딩 대상으로 돌린다
+        stats.reembed_queued = await repository.clear_posting_embed_hash(session, stale)
+
+    return stats
+
+
+async def rebuild_bodies_from_snapshots(crawler: BaseSiteCrawler) -> ReparseStats:
+    stats = ReparseStats()
+    paths = sorted(crawler.snapshot_dir.glob("position_*.html"))
+    log.info("%s: 스냅샷 %d건에서 본문 재추출", crawler.source, len(paths))
+    if not paths:
+        return stats
+
+    extract_body = getattr(crawler, "extract_body", None)
+    if extract_body is None:
+        raise RuntimeError(f"{crawler.source} 는 extract_body() 를 제공하지 않습니다.")
+
+    async with get_worker_session() as session:
+        for path in paths:
+            source_job_id = path.stem.removeprefix("position_")
+            try:
+                soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "lxml")
+                result = extract_body(soup)
+                async with session.begin_nested():
+                    updated = await repository.update_posting_body(
+                        session,
+                        source=crawler.source,
+                        source_job_id=source_job_id,
+                        description=result.get("responsibility"),
+                        body_is_image=bool(result.get("body_is_image")),
+                        body_extract_failed=bool(result.get("body_extract_failed")),
+                    )
+            except Exception:
+                log.exception("본문 재추출 실패 %s", path.name)
+                stats.errors += 1
+                continue
+
+            if updated:
+                stats.postings += 1
+                if result.get("body_extract_failed"):
+                    stats.without_skills += 1
+
+    return stats
+
+
+class CrawlService:
+    # ★ 목록이 최신순이므로, "이미 가진 공고만 나오는 페이지" 가 연달아 나오면
+    #   그 뒤는 전부 과거이고 이미 수집한 것이다. 거기서 멈춘다.
+    #   1페이지로 끊지 않는 이유: 고정 노출·광고가 섞여 한 페이지가 우연히
+    #   전부 기수집일 수 있다. 2페이지 연속이면 그럴 확률이 낮다.
+    STOP_AFTER_KNOWN_PAGES = 2
+
+    def __init__(self, crawler: BaseSiteCrawler, *, force_reextract: bool = False) -> None:
+        self.crawler = crawler
+        self.force_reextract = force_reextract
+
+    async def crawl(
+        self,
+        pages: int = 1,
+        *,
+        with_detail: bool = True,
+        start_page: int = 1,
+        skip_seen_days: int = 0,
+        keyword: Optional[str] = None,
+        until_posted_before: Optional[datetime] = None,
+    ) -> CrawlStats:
+        """until_posted_before 를 주면 백필 모드로 돈다.
+
+        ★ 평소 수집과 끊는 기준이 다르다.
+          평소   기수집 공고만 나오는 페이지가 연속 → 중단 (신규만 주우면 됨)
+          백필   등록일이 기준일보다 과거로 내려감 → 중단 (과거를 메우는 게 목적)
+          백필에서 기수집 기준으로 끊으면 이미 가진 구간을 만나는 순간 멈춰서
+          그 너머의 빈 구간을 영영 못 채운다.
+        """
+        stats = CrawlStats()
+
+        async with get_worker_session() as session:
+            run_id = await repository.start_run(
+                session,
+                kind=enums.RunKind.CRAWL,
+                source=self.crawler.source,
+                keyword=keyword,
+            )
+            field_ids = await repository.get_field_ids(session)
+            matcher = SkillMatcher.from_rows(await repository.load_skill_entries(session))
+            seen = await repository.recent_source_ids(
+                session, self.crawler.source, days=skip_seen_days
+            )
+            # 중단 판단용. seen(7일) 과 쓰임이 다르다 — repository 주석 참고
+            collected = await repository.all_source_ids(session, self.crawler.source)
+        if seen:
+            log.info(
+                "%s: 최근 %d일 내 수집 %d건 — 목록에서 걸러 상세 요청을 생략합니다.",
+                self.crawler.source,
+                skip_seen_days,
+                len(seen),
+            )
+
+        known_pages = 0
+        try:
+            for page in range(start_page, start_page + pages):
+                try:
+                    jobs, total = await self.crawler.fetch_list_page(page)
+                except ParseError as exc:
+                    log.error("%s: 목록 구조 변경 — 중단합니다. %s", self.crawler.source, exc)
+                    stats.errors += 1
+                    stats.error_messages.append(str(exc))
+                    break
+                except CrawlError as exc:
+                    log.warning(
+                        "%s: page %d 수집 실패, 다음 페이지로. %s", self.crawler.source, page, exc
+                    )
+                    stats.errors += 1
+                    stats.error_messages.append(str(exc))
+                    continue
+
+                stats.pages += 1
+                stats.total_available = total or stats.total_available
+                log.info("%s %d페이지: %d건", self.crawler.source, page, len(jobs))
+
+                if not jobs:
+                    if page == start_page:
+                        raise SelectorBrokenError(self.crawler.source, keyword)
+                    log.info("%s: page %d 가 비어 있어 종료합니다.", self.crawler.source, page)
+                    break
+
+                # 이 페이지가 통째로 "이미 가진 공고" 인가 (중단 판단)
+                if all(job.source_job_id in collected for job in jobs):
+                    known_pages += 1
+                else:
+                    known_pages = 0
+
+                fresh = [job for job in jobs if job.source_job_id not in seen]
+                known = len(jobs) - len(fresh)
+                if known:
+                    stats.skipped_known += known
+                    stats.skipped += known
+                    stats.fetched += known
+                if fresh:
+                    if with_detail:
+                        fresh = await self._fetch_details(fresh, stats)
+                    await self._persist(fresh, field_ids, matcher, stats)
+                    log.info("%s: page %d 완료 — %s", self.crawler.source, page, stats.as_line())
+                else:
+                    log.info(
+                        "%s: page %d 전부 기수집(%d건) — 상세 생략",
+                        self.crawler.source,
+                        page,
+                        known,
+                    )
+
+                await self._save_progress(run_id, stats)
+
+                if until_posted_before is not None:
+                    if self._page_is_older_than(jobs, until_posted_before):
+                        log.info(
+                            "%s: 등록일이 %s 이전으로 내려왔습니다 — page %d 에서 종료합니다.",
+                            self.crawler.source,
+                            until_posted_before.date(),
+                            page,
+                        )
+                        break
+                elif known_pages >= self.STOP_AFTER_KNOWN_PAGES:
+                    log.info(
+                        "%s: 이미 가진 공고만 %d페이지 연속 — page %d 에서 종료합니다.",
+                        self.crawler.source,
+                        known_pages,
+                        page,
+                    )
+                    break
+
+        except Exception as exc:
+            stats.errors += 1
+            stats.error_messages.append(repr(exc))
+            await self._close_run(run_id, stats, enums.RunStatus.FAILED)
+            raise
+
+        status = (
+            enums.RunStatus.SUCCESS
+            if stats.errors == 0
+            else (enums.RunStatus.PARTIAL if stats.fetched else enums.RunStatus.FAILED)
+        )
+        await self._close_run(run_id, stats, status)
+        return stats
+
+    def _page_is_older_than(self, jobs: list[RawJob], cutoff: datetime) -> bool:
+        """이 페이지가 통째로 기준일보다 과거인가.
+
+        ★ 목록이 직접 주는 등록일만 본다. DB 에 저장된 등록일은 쓰지 않는다.
+          한때 "목록에 날짜가 없는 공고는 DB 값으로 메우자" 고 했다가 판정이
+          망가졌다. 그 값들은 예전 로직으로 저장된 것이라(사람인은 등록일이
+          아니라 접수 시작일이었다) 실제보다 한참 최근으로 나온다.
+          실측: p31 목록 등록일 08/24 인데 DB 값 09/08 이 섞여 3페이지를 더 갔다.
+
+        ★ 목록이 날짜를 안 주는 사이트(점핏)는 판단하지 않고 목록 끝까지 간다.
+          점핏은 활성 공고 전체가 791건·51페이지라 끝까지 받아도 2분이다.
+          모르면서 끊는 것보다 더 받는 쪽이 안전하다.
+        """
+        dates = [job.published_at for job in jobs if job.published_at]
+        if not dates:
+            return False
+        newest = max(d if d.tzinfo else d.replace(tzinfo=UTC) for d in dates)
+        return newest < cutoff
+
+    async def _fetch_details(self, jobs: list[RawJob], stats: CrawlStats) -> list[RawJob]:
+        results = await asyncio.gather(
+            *(self.crawler.fetch_detail(job) for job in jobs), return_exceptions=True
+        )
+        merged: list[RawJob] = []
+        for original, result in zip(jobs, results, strict=True):
+            if isinstance(result, BaseException):
+                log.warning("상세 실패 id=%s: %r", original.source_job_id, result)
+                stats.errors += 1
+                merged.append(original)
+            else:
+                merged.append(result)
+        return merged
+
+    async def _persist(
+        self,
+        jobs: list[RawJob],
+        field_ids: dict[str, int],
+        matcher: SkillMatcher,
+        stats: CrawlStats,
+    ) -> None:
+        async with get_worker_session() as session:
+            known = await repository.get_content_hashes(
+                session, self.crawler.source, [j.source_job_id for j in jobs]
+            )
+
+            for job in jobs:
+                stats.fetched += 1
+                new_hash = job.content_hash()
+                old_hash = known.get(job.source_job_id)
+                unchanged = old_hash is not None and old_hash == new_hash
+
+                if unchanged and not self.force_reextract:
+                    await repository.touch_posting(session, self.crawler.source, job.source_job_id)
+                    stats.skipped += 1
+                    continue
+
+                try:
+                    async with session.begin_nested():
+                        posting_id = await self._save_one(
+                            session, job, field_ids, matcher, new_hash
+                        )
+                except Exception as exc:
+                    log.exception("적재 실패 id=%s", job.source_job_id)
+                    stats.errors += 1
+                    stats.error_messages.append(f"{job.source_job_id}: {exc!r}")
+                    continue
+
+                if unchanged:
+                    stats.reextracted += 1
+                    continue
+
+                stats.changed_posting_ids.append(posting_id)
+                if old_hash is None:
+                    stats.inserted += 1
+                else:
+                    stats.updated += 1
+
+    async def _save_one(
+        self,
+        session,
+        job: RawJob,
+        field_ids: dict[str, int],
+        matcher: SkillMatcher,
+        content_hash: str,
+    ) -> int:
+        company_id = await self._save_company(session, job)
+
+        tech_field = extractor.map_tech_field(job.job_categories, job.title)
+        description = job.build_description()
+        salary_min, salary_max, salary_type, salary_period = extractor.parse_salary(job.salary_raw)
+
+        posting_id = await repository.upsert_posting(
+            session,
+            {
+                "source": job.source,
+                "source_job_id": job.source_job_id,
+                "company_id": company_id,
+                "field_id": field_ids.get(tech_field.value) if tech_field else None,
+                "title": job.title[:300],
+                "company_name_raw": job.company_name[:200] or None,
+                "tags_raw": job.tech_stacks,
+                "career_min": job.career_min,
+                "career_max": job.career_max,
+                "education": (job.education or None) and job.education[:30],
+                "employment_type": (job.employment_type or None) and job.employment_type[:30],
+                "location": (job.locations[0][:120] if job.locations else None),
+                "description": description,
+                "welfare": job.build_welfare(),
+                "salary_raw": job.salary_raw,
+                "salary_min": salary_min,
+                "salary_max": salary_max,
+                "salary_type": salary_type.value,
+                "salary_period": salary_period.value if salary_period else None,
+                "body_is_image": job.body_is_image,
+                "body_extract_failed": job.body_extract_failed,
+                "posted_at": job.published_at,
+                "expires_at": job.closed_at,
+                "content_hash": content_hash,
+                "collected_at": datetime.now(UTC),
+                "raw_fields": {
+                    "url": job.url,
+                    "job_categories": job.job_categories,
+                    "locations": job.locations,
+                    "company_tags": job.company_tags,
+                    "newcomer": job.newcomer,
+                    "detail_fetched": job.detail_fetched,
+                    "image_urls": job.image_urls,
+                },
+            },
+        )
+
+        hits = matcher.extract(description=description, tags=job.tech_stacks)
+        await repository.replace_posting_skills(
+            session,
+            posting_id,
+            [(hit.skill_id, hit.requirement, hit.mentions) for hit in hits],
+        )
+        return posting_id
+
+    async def _save_company(self, session, job: RawJob) -> Optional[int]:
+        if not job.company_name.strip():
+            return None
+
+        name_key = extractor.normalize_company_name(job.company_name)
+        if not name_key:
+            return None
+
+        company_id = await repository.upsert_company(
+            session,
+            name=job.company_name[:200],
+            name_key=name_key[:200],
+            description=job.company_service_info,
+            homepage=(job.company_url or None),
+            logo_url=(job.company_logo_url or None),
+            founded=(job.company_establish_date or None),
+            industry=job.company_industry,
+            employee_count=job.company_employee_count,
+            revenue=job.company_revenue,
+            size_type=extractor.company_size(
+                employee_count=job.company_employee_count, tags=job.company_tags
+            ),
+        )
+
+        if job.company_source_id:
+            await repository.upsert_company_source(
+                session,
+                company_id=company_id,
+                source=job.source,
+                source_company_id=job.company_source_id,
+                url=job.company_url,
+            )
+        return company_id
+
+    async def _save_progress(self, run_id: int, stats: CrawlStats) -> None:
+        """페이지 하나를 처리할 때마다 통계를 남긴다.
+
+        ★ 작업이 타임아웃으로 강제 취소되면 _close_run 까지 못 간다. 공고는
+          페이지마다 커밋되는데 통계만 사라져서, 나중에 "그날 몇 건 들어왔나" 를
+          실행 이력으로 추적할 수 없게 된다.
+        ★ 기록 실패가 수집을 멈추게 해서는 안 된다. 통계는 부수 기록일 뿐이다.
+        """
+        try:
+            async with get_worker_session() as session:
+                await repository.update_run_progress(
+                    session,
+                    run_id,
+                    fetched=stats.fetched,
+                    inserted=stats.inserted,
+                    updated=stats.updated,
+                    skipped=stats.skipped,
+                    errors=stats.errors,
+                )
+        except Exception:  # noqa: BLE001 — 통계 기록 실패로 수집을 멈추지 않는다
+            log.warning("수집 진행 기록 실패 run_id=%s", run_id, exc_info=True)
+
+    async def _close_run(self, run_id: int, stats: CrawlStats, status: enums.RunStatus) -> None:
+        notes = [f"skipped_known={stats.skipped_known}"] if stats.skipped_known else []
+        notes += stats.error_messages[:5]
+
+        async with get_worker_session() as session:
+            await repository.finish_run(
+                session,
+                run_id,
+                status=status,
+                fetched=stats.fetched,
+                inserted=stats.inserted,
+                updated=stats.updated,
+                skipped=stats.skipped,
+                errors=stats.errors,
+                message="; ".join(notes) or None,
+            )

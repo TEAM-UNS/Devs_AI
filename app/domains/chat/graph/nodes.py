@@ -1,14 +1,82 @@
-"""그래프 노드.
+import logging
 
-    load_context   세션 히스토리 · 프로필 로드, 토큰 예산에 맞게 절삭
-    guard          스코프 검사 + 레이트리밋. 차단이면 즉시 종료 경로로
-    agent          LLM 호출. 툴 호출이 오면 실행 후 결과를 되먹임
-                   툴 실행 결과는 tool_calls / charts 에 누적
-    persist        chat_message + chat_tool_call(chart_payload) 저장,
-                   세션 message_count · last_message_at 갱신
+from functools import cache
+from typing import Any, Optional
 
-규칙
-    - 툴이 전부 실패하면 "데이터를 조회하지 못했다"고 명시하게 한다
-    - 툴 결과에 없는 수치를 LLM 이 지어내지 않도록 시스템 프롬프트에서 강제
-    - 연봉 수치는 sample_size · disclosure_rate 를 반드시 함께 서술
-"""
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.graph import END, MessagesState
+from langgraph.runtime import get_runtime
+
+from app.domains.chat.graph.prompts import system_prompt, profile_prompt, service_guide
+from app.domains.chat.tools.registry import chat_tools
+from app.domains.chat.tools.context import ToolContext
+from app.domains.chat.exceptions import LLMRefused
+from app.domains.chat.graph.decision import decide
+from app.infra.llm.errors import upstream_guard
+from app.infra.llm.factory import build_llm
+from app.infra.llm.port import LLMPort, StopReason
+from app.infra.llm.tracing import node_trace_context
+
+
+logger = logging.getLogger(__name__)
+
+
+class ChatState(MessagesState):
+    narrow_tool: Optional[str]
+
+
+@cache
+def _llm() -> LLMPort:
+    return build_llm()
+
+
+@cache
+def _model() -> BaseChatModel:
+    return _llm().chat().bind_tools(chat_tools())
+
+
+@cache
+def _narrow_model(name: str) -> BaseChatModel:
+    tool = next(t for t in chat_tools() if t.name == name)
+    return _llm().chat().bind_tools([tool], tool_choice=name)
+
+
+async def call_jev(state: ChatState, config: RunnableConfig) -> dict[str, Any]:
+    return await decide(
+        state["messages"],
+        get_runtime(ToolContext).context.profile,
+        node_trace_context(config),
+    )
+
+
+def jev_routed(state: ChatState) -> str:
+    last = state["messages"][-1]
+    if not isinstance(last, AIMessage):
+        return "llm"
+    return "tools" if last.tool_calls else END
+
+
+async def call_llm(state: ChatState) -> dict[str, Any]:
+    messages = [_llm().system(system_prompt() + service_guide())]
+
+    profile = get_runtime(ToolContext).context.profile
+    if profile is not None:
+        messages.append(
+            SystemMessage(profile_prompt(profile))
+        )
+
+    narrow = state.get("narrow_tool")
+    model = _narrow_model(narrow) if narrow else _model()
+
+    with upstream_guard():
+        response = await model.ainvoke([*messages, *state["messages"]])
+
+    reason = _llm().stop_reason(response)
+    if reason == StopReason.REFUSED:
+        raise LLMRefused()
+    if reason == StopReason.TRUNCATED:
+        logger.warning("LLM 응답이 max_tokens 에서 잘림")
+
+    return {"messages": [response], "narrow_tool": None}

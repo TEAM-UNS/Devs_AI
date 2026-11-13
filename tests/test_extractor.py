@@ -1,0 +1,336 @@
+# 스킬 추출기 테스트
+
+from __future__ import annotations
+
+import pytest
+
+from app.domains.crawler.extractor import (
+    Grade,
+    Section,
+    detect_section,
+    SkillMatcher,
+    map_tech_field,
+    normalize_company_name,
+    parse_salary,
+    split_sections,
+)
+from app.domains.crawler.seed_data import skill_catalog
+from app.domains.crawler.enums import Requirement, SalaryPeriod, SalaryType, TechField
+from typing import Optional
+
+matcher = SkillMatcher.from_catalog()
+
+
+def extract(description: Optional[str] = None, tags: tuple[str, ...] = ()) -> dict[str, Requirement]:
+    return {
+        hit.name: hit.requirement for hit in matcher.extract(description=description, tags=tags)
+    }
+
+
+def names(description: Optional[str] = None, tags: tuple[str, ...] = ()) -> set[str]:
+    return set(extract(description, tags))
+
+
+POSTING = """\
+[주요업무]
+- 백엔드 API 설계 및 운영
+
+[자격요건]
+- Java, Spring Boot 경험이 있으신 분
+
+[우대사항]
+- Kotlin, Kubernetes 경험이 있으신 분
+
+[복리후생]
+- Slack, Notion 으로 소통해요
+- 자바 도서구입비를 지원합니다
+"""
+
+
+def test_split_sections_labels_each_block():
+    sections = dict(split_sections(POSTING))
+    assert set(sections) == {
+        Section.RESPONSIBILITY,
+        Section.REQUIRED,
+        Section.PREFERRED,
+        Section.IGNORE,
+    }
+    assert "Spring Boot" in sections[Section.REQUIRED]
+    assert "Slack" in sections[Section.IGNORE]
+
+
+def test_no_header_becomes_single_body_block():
+    sections = split_sections("Python 으로 데이터 파이프라인을 만듭니다.")
+    assert [s for s, _ in sections] == [Section.BODY]
+
+
+def test_qualification_section_is_required():
+    result = extract(POSTING)
+    assert result["Java"] is Requirement.REQUIRED
+    assert result["Spring Boot"] is Requirement.REQUIRED
+
+
+def test_preferred_section_is_preferred():
+    result = extract(POSTING)
+    assert result["Kotlin"] is Requirement.PREFERRED
+    assert result["Kubernetes"] is Requirement.PREFERRED
+
+
+def test_ignore_section_is_dropped():
+    found = names(POSTING)
+    assert "Notion" not in found
+    assert "Slack" not in found
+    assert extract(POSTING)["Java"] is Requirement.REQUIRED
+
+
+def test_welfare_only_skill_is_not_extracted():
+    body = "[복리후생]\n- 자바 도서구입비 지원\n- Slack 으로 소통합니다"
+    assert names(body) == set()
+
+
+def test_site_tag_beats_body_grade():
+    result = extract(POSTING, tags=("Kotlin",))
+    assert result["Kotlin"] is Requirement.TAG
+
+
+def test_grade_priority_is_tag_then_required_then_preferred():
+    assert Grade.TAG > Grade.REQUIRED > Grade.PREFERRED > Grade.BODY
+
+
+def test_javascript_is_not_java():
+    found = names("[자격요건]\nJavaScript 개발 경험이 필요합니다")
+    assert "JavaScript" in found
+    assert "Java" not in found
+
+
+def test_korean_alias_longest_match_wins():
+    found = names("[자격요건]\n자바스크립트 개발 경험")
+    assert "JavaScript" in found
+    assert "Java" not in found
+
+
+def test_cpp_is_not_c():
+    found = names("[자격요건]\nC++ 개발 경험이 필요합니다")
+    assert "C++" in found
+    assert "C" not in found
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("C# 개발 경험", "C#"),
+        (".NET 기반 서비스 개발 경험", "ASP.NET"),
+        ("Node.js 사용 경험", "Node.js"),
+        ("Next.js 개발 경험", "Next.js"),
+    ],
+)
+def test_special_character_aliases(text, expected):
+    assert expected in names(f"[자격요건]\n{text}")
+
+
+def test_alias_inside_word_is_not_matched():
+    assert "C" not in names("[자격요건]\nABC 시스템 개발 경험")
+    assert "R" not in names("[자격요건]\nHR 시스템 개발 경험")
+
+
+def test_korean_particle_after_alias_still_matches():
+    found = names("[자격요건]\nJava를 사용하고 코틀린으로 전환한 경험")
+    assert {"Java", "Kotlin"} <= found
+
+
+def test_ambiguous_go_without_context_is_rejected():
+    assert "Go" not in names("[자격요건]\nGo to the office")
+
+
+def test_ambiguous_go_with_context_is_accepted():
+    assert "Go" in names("[자격요건]\nGo 언어 개발 경험")
+
+
+def test_ambiguous_c_with_context_is_accepted():
+    assert "C" in names("[자격요건]\nC 언어로 펌웨어를 작성한 경험")
+
+
+def test_ambiguous_skill_from_site_tag_skips_context_check():
+    assert "Go" in names(None, tags=("Go",))
+
+
+def test_mentions_counts_occurrences():
+    body = "[자격요건]\nPython 개발 경험\n[우대사항]\nPython 으로 데이터 처리 경험"
+    hit = next(h for h in matcher.extract(description=body) if h.name == "Python")
+    assert hit.mentions == 2
+    assert hit.requirement is Requirement.REQUIRED  # 더 높은 등급이 이긴다
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("(주)드림어스컴퍼니", "드림어스컴퍼니"),
+        ("주식회사 카카오", "카카오"),
+        ("네이버 (NAVER)", "네이버"),
+    ],
+)
+def test_normalize_company_name(raw, expected):
+    assert normalize_company_name(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("categories", "expected"),
+    [
+        (["서버/백엔드 개발자"], TechField.BACKEND),
+        (["게임 서버 개발자"], TechField.GAME),
+        (["인공지능/머신러닝"], TechField.DATA_AI),
+        (["안드로이드 개발자"], TechField.MOBILE),
+        (["정보보안 담당자"], TechField.SECURITY),
+        (["HW/임베디드"], TechField.EMBEDDED),
+        (["서버/백엔드 개발자", "백엔드 엔지니어", "프론트엔드 개발자"], TechField.BACKEND),
+        (["개발 PM"], None),
+        ([], None),
+    ],
+)
+def test_map_tech_field(categories, expected):
+    assert map_tech_field(categories) is expected
+
+
+@pytest.mark.parametrize(
+    ("categories", "title", "expected"),
+    [
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "Python 백엔드 개발자", TechField.BACKEND),
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "프론트엔드 개발자", TechField.FRONTEND),
+        # 동점인데 제목으로도 못 가르면 억지로 고르지 않고 미분류
+        (["서버/백엔드 개발자", "프론트엔드 개발자"], "광학 어플리케이션 엔지니어", None),
+        (["DBA", "devops/시스템 엔지니어", "서버/백엔드 개발자"], "", None),
+        ([], "웹(Web) 백엔드 개발자", TechField.BACKEND),
+        ([], "[개발 본부] DevOps Engineer", TechField.DEVOPS),
+        ([], "Senior Engineer", None),
+    ],
+)
+def test_map_tech_field_uses_title(categories, title, expected):
+    assert map_tech_field(categories, title) is expected
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "지속가능(Sustainable) 플랫폼 서버 개발",
+        "메인터넌스 담당 서버 엔지니어",
+    ],
+)
+def test_ai_keyword_needs_word_boundary(title):
+    assert map_tech_field([], title) is TechField.BACKEND
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("3,000~4,000만원", (3000, 4000, SalaryType.RANGE, SalaryPeriod.ANNUAL)),
+        ("3000~4000", (3000, 4000, SalaryType.RANGE, SalaryPeriod.ANNUAL)),
+        ("2,600만원 이상", (2600, None, SalaryType.MIN_ONLY, SalaryPeriod.ANNUAL)),
+        ("월 300만원", (3600, 3600, SalaryType.RANGE, SalaryPeriod.MONTHLY)),
+        ("시급 12,000원", (None, None, SalaryType.UNKNOWN, SalaryPeriod.HOURLY)),
+        ("회사내규에 따름", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("면접 후 결정", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("협의 후 결정", (None, None, SalaryType.NEGOTIABLE, None)),
+        ("$80,000", (None, None, SalaryType.UNKNOWN, None)),
+        (None, (None, None, SalaryType.UNKNOWN, None)),
+    ],
+)
+def test_parse_salary_normalization_table(raw, expected):
+    assert parse_salary(raw) == expected
+
+
+def test_monthly_salary_is_annualized():
+    low, high, _, period = parse_salary("월 300만원")
+    assert (low, high) == (3600, 3600)
+    assert period is SalaryPeriod.MONTHLY
+
+
+def test_hourly_amount_is_discarded():
+    low, high, salary_type, period = parse_salary("시급 12,000원")
+    assert (low, high) == (None, None)
+    assert salary_type is SalaryType.UNKNOWN
+    assert period is SalaryPeriod.HOURLY
+
+
+def test_implausible_amount_is_rejected():
+    assert parse_salary("30,000,000원")[:2] == (None, None)
+
+
+def test_body_grade_is_no_longer_flattened_into_preferred():
+    result = extract(POSTING)
+    body = "[주요업무]\n- Kubernetes 클러스터 위에서 서비스를 운영합니다"
+    assert extract(body)["Kubernetes"] is Requirement.BODY
+    assert result["Java"] is Requirement.REQUIRED
+
+
+def test_requirement_has_four_values():
+    assert {r.value for r in Requirement} == {"tag", "required", "preferred", "body"}
+
+
+def test_lowercase_can_in_english_sentence_is_not_matched():
+    body = "[자격요건]\nYou can use any language you prefer for development"
+    assert "CAN" not in names(body)
+
+
+def test_uppercase_can_is_matched():
+    body = "[자격요건]\nCAN, UART 등 통신 인터페이스 개발 경험"
+    assert "CAN" in names(body)
+
+
+def test_lowercase_es_is_not_matched():
+    assert "Elasticsearch" not in names("[자격요건]\nSe requieren es habilidades de desarrollo")
+
+
+def test_uppercase_es_is_matched():
+    assert "Elasticsearch" in names("[자격요건]\nES 클러스터 운영 경험")
+
+
+def test_lowercase_single_letters_are_not_matched():
+    body = "[자격요건]\nsection c and r of the development handbook"
+    assert "C" not in names(body)
+    assert "R" not in names(body)
+
+
+def test_common_tools_are_flagged():
+    flagged = {s.name for s in skill_catalog() if s.is_common}
+    assert flagged == {"Git", "Jira", "Slack", "Notion", "Confluence"}
+
+
+def test_figma_and_linux_are_not_common():
+    not_common = {s.name for s in skill_catalog() if not s.is_common}
+    assert {"Figma", "Linux"} <= not_common
+
+
+def test_common_tools_are_still_extracted():
+    assert "Slack" in names("[자격요건]\nSlack 으로 협업한 경험")
+
+
+def test_body_line_containing_processing_is_not_a_welfare_header():
+    for line in (
+        "• 가상머신 Processor, Peripheral 개발",
+        "- Capability of sensor-based signal processing and analysis.",
+        "• Embedded System 기반 ISP(Image Signal Processor) 개발",
+        "- CUDA를 활용한 Multi-processing 및 이미지 프로세싱 최적화",
+        "• RPA(Robotic Process Automation) 솔루션 아키텍처 설계 및 구축",
+        "Process Improvement",
+    ):
+        assert detect_section(line) is None, line
+
+
+def test_bare_english_welfare_headers_are_still_ignored():
+    for line in ("Benefits", "BENEFITS", "PROCESS", "Hiring Process",
+                 "[Perks & Benefits]", "05 / BENEFITS", "Welfare"):
+        assert detect_section(line) is Section.IGNORE, line
+
+
+def test_processing_line_keeps_the_rest_of_the_section():
+    body = "\n".join([
+        "[자격요건]",
+        "• 대규모 사용자 로그 처리 경험 (high-volume event processing)",
+        "• Spark, Flink 등 분산 처리 프레임워크 실무 경험",
+        "[복리후생]",
+        "• 식대 지원",
+    ])
+    sections = dict(split_sections(body))
+    assert "Spark" in sections[Section.REQUIRED]
+    assert "식대" in sections[Section.IGNORE]
+    assert "Spark" not in sections[Section.IGNORE]

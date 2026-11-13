@@ -1,5 +1,161 @@
-"""점핏 — 공개 XHR(JSON) 호출.
+# 점핏 목록과 상세 수집 (JSON API)
 
-스택 태그   있음 → requirement='tag' 로 저장
-기업정보    기업소개 · 업종
-"""
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Any
+
+from app.domains.crawler.schemas import RawJob
+from app.domains.crawler.sites.base import BaseSiteCrawler, CrawlError, ParseError
+
+log = logging.getLogger(__name__)
+
+
+def _parse_dt(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace(" ", "T"))
+    except ValueError:
+        log.debug("날짜 파싱 실패: %r", value)
+        return None
+    return dt.replace(tzinfo=timezone(timedelta(hours=9))) if dt.tzinfo is None else dt
+
+
+def _split_categories(value: Any) -> list[str]:
+    if not value or not isinstance(value, str):
+        return []
+    return [c.strip() for c in value.split(",") if c.strip()]
+
+
+class JumpitCrawler(BaseSiteCrawler):
+    source = "jumpit"
+
+    API_BASE = "https://jumpit-api.saramin.co.kr"
+    LIST_URL = f"{API_BASE}/api/positions"
+    DETAIL_URL = f"{API_BASE}/api/position/{{id}}"
+    WEB_BASE = "https://jumpit.saramin.co.kr"
+    PAGE_SIZE = 16
+
+    referer = f"{WEB_BASE}/positions"
+
+    async def fetch_list_page(self, page: int) -> tuple[list[RawJob], int]:
+        payload = await self.get_json(
+            self.LIST_URL,
+            # ★ 최신순이어야 "앞쪽 N페이지만 봐도 신규를 다 잡는다" 가 성립한다.
+            #   popular 는 생략 시 기본값과 동일한 인기순이라, 오늘 올라온 공고가
+            #   앞쪽에 들어올 이유가 없었다.
+            #   실측 2026-10-03 (같은 모집단 791건, 1페이지 id 구간):
+            #     popular  55,013,728 ~ 55,115,564
+            #     latest   55,172,775 ~ 55,193,549
+            #   페이지가 뒤로 갈수록 과거로 내려간다 (p1 중앙값 55,191,329 →
+            #   p10 55,161,511 → p40 54,966,807).
+            params={"sort": "latest", "highlight": "false", "page": page},
+            snapshot=f"list_p{page}",
+        )
+        return self.parse_list(payload, page)
+
+    def parse_list(self, payload: Any, page: int) -> tuple[list[RawJob], int]:
+        result = (payload or {}).get("result")
+        if not isinstance(result, dict) or "positions" not in result:
+            raise ParseError(
+                f"jumpit 목록 응답에 result.positions 가 없습니다 (page={page}). "
+                f"받은 키: {list((payload or {}).keys())}"
+            )
+
+        positions = result.get("positions") or []
+        total = int(result.get("totalCount") or 0)
+
+        jobs: list[RawJob] = []
+        for item in positions:
+            try:
+                jobs.append(self._map_list_item(item))
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning("jumpit 목록 항목 매핑 실패 id=%s: %s", item.get("id"), exc)
+        return jobs, total
+
+    def _map_list_item(self, item: dict[str, Any]) -> RawJob:
+        job_id = item["id"]
+        stacks = item.get("techStacks") or []
+        return RawJob(
+            source=self.source,
+            source_job_id=str(job_id),
+            url=f"{self.WEB_BASE}/position/{job_id}",
+            title=item.get("title") or "",
+            company_name=item.get("companyName") or "",
+            company_logo_url=item.get("logo") or None,
+            tech_stacks=[s for s in stacks if isinstance(s, str)],
+            job_categories=_split_categories(item.get("jobCategory")),
+            locations=[loc for loc in (item.get("locations") or []) if isinstance(loc, str)],
+            career_min=item.get("minCareer"),
+            career_max=item.get("maxCareer"),
+            newcomer=bool(item.get("newcomer")),
+            closed_at=_parse_dt(item.get("closedAt")),
+            raw={"list": item},
+        )
+
+    async def fetch_detail(self, job: RawJob) -> RawJob:
+        try:
+            payload = await self.get_json(
+                self.DETAIL_URL.format(id=job.source_job_id),
+                snapshot=f"position_{job.source_job_id}",
+            )
+        except CrawlError as exc:
+            log.warning("jumpit 상세 실패 id=%s: %s", job.source_job_id, exc)
+            return job
+        return self.merge_detail(job, payload)
+
+    def merge_detail(self, job: RawJob, payload: Any) -> RawJob:
+        result = (payload or {}).get("result")
+        if not isinstance(result, dict):
+            log.warning("jumpit 상세 응답에 result 없음 id=%s", job.source_job_id)
+            return job
+
+        # 상세의 techStacks 는 목록과 달리 {stack, imagePath} 객체 배열이다
+        stacks = [
+            s.get("stack")
+            for s in (result.get("techStacks") or [])
+            if isinstance(s, dict) and s.get("stack")
+        ]
+        categories = [
+            c.get("name")
+            for c in (result.get("jobCategories") or [])
+            if isinstance(c, dict) and c.get("name")
+        ]
+        tags = [
+            t.get("name")
+            for t in (result.get("tags") or [])
+            if isinstance(t, dict) and t.get("name")
+        ]
+        location = result.get("location")
+        man_idx = result.get("manDbMcomIdx")
+
+        return job.merged(
+            {
+                "detail_fetched": True,
+                "title": result.get("title") or job.title,
+                "company_name": result.get("companyName") or job.company_name,
+                "company_logo_url": result.get("logo") or job.company_logo_url,
+                "tech_stacks": stacks or job.tech_stacks,
+                "job_categories": categories or job.job_categories,
+                "locations": [location]
+                if isinstance(location, str) and location
+                else job.locations,
+                "career_min": result.get("minCareer", job.career_min),
+                "career_max": result.get("maxCareer", job.career_max),
+                "newcomer": bool(result.get("newcomer", job.newcomer)),
+                "education": result.get("educationName"),
+                "published_at": _parse_dt(result.get("publishedAt")),
+                "closed_at": _parse_dt(result.get("closedAt")) or job.closed_at,
+                "responsibility": result.get("responsibility"),
+                "qualifications": result.get("qualifications"),
+                "preferred_requirements": result.get("preferredRequirements"),
+                "welfares": result.get("welfares"),
+                "recruit_process": result.get("recruitProcess"),
+                "company_service_info": result.get("serviceInfo"),
+                "company_url": result.get("companyUrl"),
+                "company_establish_date": result.get("establishDate"),
+                "company_source_id": str(man_idx) if man_idx else None,
+                "company_tags": tags,
+                "raw": {**job.raw, "detail": result},
+            }
+        )

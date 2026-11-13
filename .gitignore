@@ -37,7 +37,8 @@ coverage.xml
 .hypothesis/
 
 # ── 런타임 산출물 ───────────────────────────────────────────────────────────
-# 크롤러 스냅샷(CRAWL_SNAPSHOT_DIR). 파싱 실패 원본이라 용량이 크고 재생성 가능.
+# 크롤러 원본 응답 스냅샷. 용량이 크고 재수집으로 복구 가능.
+data/raw/
 var/
 *.log
 logs/
@@ -53,3 +54,24 @@ desktop.ini
 
 # ── 도커 ────────────────────────────────────────────────────────────────────
 docker-compose.override.yml
+# 인계용 덤프. 70MB+ 라 커밋하지 않는다.
+handoff/
+market-handoff-*.zip
+market-handoff-*.tar.gz
+csv-export/
+market-csv-*.zip
+
+# 로컬 확인·일회성 스크립트. seed_skills.py 는 초기 셋업이라 추적한다.
+scripts/try_queries.py
+scripts/backfill_*.py
+
+# 로컬 테스트용 DB 셋업. AI 서버는 테이블과 마이그레이션을 관리하지 않는다
+alembic/
+alembic.ini
+init.sql
+
+# 백엔드와의 DB 공유 경계 메모. 접속 정보가 섞이기 쉬워 올리지 않는다
+backend_sync/
+# 로컬 실험 스크립트. 아직 저장소에 남기지 않는다
+test_scripts/
+about_project/

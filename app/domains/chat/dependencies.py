@@ -1,8 +1,15 @@
-"""chat 의존성 — 어댑터 선택 · 서비스 조립.
+# chat 의존성 조립
 
-    LLMDep         USE_FAKE_LLM 이면 fake.FakeLLM, 아니면 chat_adapter
-    EmbedderDep    질의 임베딩용 (search_* 툴)
-    ChatServiceDep repository + graph + llm 조립
+from typing import Annotated
 
-여기가 유일한 어댑터 선택 지점이다. 도메인 코드는 port 만 본다.
-"""
+from fastapi import Depends
+
+from app.core.dependencies import SessionDep
+from app.domains.chat.queries import ChatQueries
+
+
+def get_chat_queries(session: SessionDep) -> ChatQueries:
+    return ChatQueries(session)
+
+
+ChatQueriesDep = Annotated[ChatQueries, Depends(get_chat_queries)]

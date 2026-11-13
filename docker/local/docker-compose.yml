@@ -1,0 +1,87 @@
+name: jobstack-ai
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: jobstack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobstack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobstack}
+      POSTGRES_DB: ${POSTGRES_DB:-jobstack}
+      LANG: C.UTF-8
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    # ★ 도커 기본 /dev/shm 은 64MB 다. 아래 command 의 병렬 인덱스 빌드 설정과
+    #   조합하면 HNSW 생성이 반드시 실패한다:
+    #     could not resize shared memory segment to 533794304 bytes:
+    #     No space left on device
+    #   maintenance_work_mem 을 병렬 워커가 공유메모리로 나눠 갖기 때문이다.
+    #   실제로 벡터 14,322개에 인덱스를 걸다 이걸로 막혔다.
+    shm_size: 1gb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "max_parallel_maintenance_workers=4"
+      # ★ 이게 없으면 HNSW 인덱스를 만들어 놓고도 안 쓴다.
+      #   pgvector 의 인덱스 시작비용 추정이 커서, 기본값 4.0 에서는 플래너가
+      #   순차 스캔이 더 싸다고 판단한다. 실측(청크 14,322개):
+      #       순차 스캔 61.1ms  vs  HNSW 1.0ms  → 61배
+      #   결과는 맞고 느리기만 해서 알아채기 어렵다. SSD 기준값 1.1 로 낮춘다.
+      - "-c"
+      - "random_page_cost=1.1"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobstack} -d ${POSTGRES_DB:-jobstack}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: jobstack-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: docker/local/Dockerfile
+    image: jobstack-worker
+    container_name: jobstack-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobstack}:${POSTGRES_PASSWORD:-jobstack}@postgres:5432/${POSTGRES_DB:-jobstack}
+      REDIS_URL: redis://redis:6379/0
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - ../../data/raw:/app/data/raw
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:
+  redisdata:

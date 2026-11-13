@@ -1,0 +1,858 @@
+# 크롤러와 임베딩이 쓰는 쓰기 쿼리
+
+from collections import defaultdict
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import Optional, Any
+
+from sqlalchemy import and_, delete, func, or_, select, text, tuple_, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.domains.crawler import enums
+from app.domains.crawler.models import (
+    Company,
+    CompanySource,
+    CrawlRun,
+    JobPosting,
+    PostingChunk,
+    PostingSkill,
+    Skill,
+    SkillAlias,
+    SkillField,
+    TechField,
+)
+from app.domains.crawler.schemas import SkillDictionaryRow, UnmatchedTag
+
+
+async def get_field_ids(session: AsyncSession) -> dict[str, int]:
+    rows = (await session.exec(select(TechField.code, TechField.id))).all()
+    return {code: fid for code, fid in rows}
+
+
+async def upsert_company(
+    session: AsyncSession,
+    *,
+    name: str,
+    name_key: str,
+    description: Optional[str] = None,
+    homepage: Optional[str] = None,
+    logo_url: Optional[str] = None,
+    founded: Optional[str] = None,
+    industry: Optional[str] = None,
+    employee_count: Optional[int] = None,
+    revenue: Optional[int] = None,
+    size_type: enums.CompanySize = enums.CompanySize.UNKNOWN,
+) -> int:
+    stmt = pg_insert(Company).values(
+        name_key=name_key,
+        name=name,
+        description=description,
+        homepage=(homepage or None) and homepage[:500],
+        logo_url=(logo_url or None) and logo_url[:255],
+        founded=(founded or None) and founded[:20],
+        industry=(industry or None) and industry[:120],
+        employee_count=employee_count,
+        revenue=revenue,
+        size_type=size_type.value,
+    )
+    excluded = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Company.name_key],
+        set_={
+            "name": excluded.name,
+            "description": func.coalesce(excluded.description, Company.description),
+            "homepage": func.coalesce(excluded.homepage, Company.homepage),
+            "logo_url": func.coalesce(excluded.logo_url, Company.logo_url),
+            "founded": func.coalesce(excluded.founded, Company.founded),
+            "industry": func.coalesce(excluded.industry, Company.industry),
+            "employee_count": func.coalesce(excluded.employee_count, Company.employee_count),
+            "revenue": func.coalesce(excluded.revenue, Company.revenue),
+            "size_type": func.coalesce(
+                func.nullif(excluded.size_type, enums.CompanySize.UNKNOWN.value),
+                Company.size_type,
+            ),
+        },
+    ).returning(Company.id)
+    company_id = (await session.exec(stmt)).one()
+    return company_id if isinstance(company_id, int) else company_id[0]
+
+
+async def upsert_company_source(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    source: str,
+    source_company_id: str,
+    url: Optional[str] = None,
+) -> None:
+    stmt = pg_insert(CompanySource).values(
+        company_id=company_id,
+        source=source,
+        source_company_id=source_company_id,
+        url=url,
+    )
+    stmt = stmt.on_conflict_do_update(
+        constraint="company_source_uk",
+        set_={"company_id": stmt.excluded.company_id, "url": stmt.excluded.url},
+    )
+    await session.exec(stmt)
+
+
+async def upsert_skills(session: AsyncSession, names: Iterable[str]) -> dict[str, int]:
+    unique = sorted({n.strip() for n in names if n and n.strip()})
+    if not unique:
+        return {}
+
+    await session.exec(
+        pg_insert(Skill)
+        .values([{"name": n} for n in unique])
+        .on_conflict_do_nothing(index_elements=[Skill.name])
+    )
+    rows = (await session.exec(select(Skill.name, Skill.id).where(Skill.name.in_(unique)))).all()
+    return {name: sid for name, sid in rows}
+
+
+async def load_skill_entries(session: AsyncSession) -> list[SkillDictionaryRow]:
+    skills = (
+        await session.exec(select(Skill.id, Skill.name, Skill.is_ambiguous, Skill.is_common))
+    ).all()
+    aliases = (
+        await session.exec(select(SkillAlias.skill_id, SkillAlias.alias, SkillAlias.case_sensitive))
+    ).all()
+
+    insensitive: dict[int, list[str]] = defaultdict(list)
+    sensitive: dict[int, list[str]] = defaultdict(list)
+    for skill_id, alias, case_sensitive in aliases:
+        (sensitive if case_sensitive else insensitive)[skill_id].append(alias)
+
+    rows: list[SkillDictionaryRow] = []
+    for skill_id, name, is_ambiguous, is_common in skills:
+        cs = sensitive[skill_id]
+        plain = list(insensitive[skill_id])
+        if not any(a.lower() == name.lower() for a in cs):
+            plain.append(name)
+        rows.append(
+            SkillDictionaryRow(
+                skill_id=skill_id,
+                name=name,
+                is_ambiguous=is_ambiguous,
+                is_common=is_common,
+                aliases=plain,
+                cs_aliases=cs,
+            )
+        )
+    return rows
+
+
+async def count_unmatched_tags(
+    session: AsyncSession, *, source: Optional[str] = None
+) -> tuple[list[UnmatchedTag], int, int]:
+    where_source = "WHERE p.source = :source" if source else ""
+    sql = text(
+        f"""
+        WITH tags AS (
+            SELECT lower(trim(t.tag)) AS tag
+            FROM market.job_posting p,
+                 LATERAL jsonb_array_elements_text(p.tags_raw) AS t(tag)
+            {where_source}
+        ),
+        marked AS (
+            SELECT tag,
+                   EXISTS (
+                       SELECT 1 FROM market.skill_alias a WHERE lower(a.alias) = tags.tag
+                       UNION ALL
+                       SELECT 1 FROM market.skill s WHERE lower(s.name) = tags.tag
+                   ) AS matched
+            FROM tags
+        )
+        SELECT tag, matched, COUNT(*) AS cnt
+        FROM marked GROUP BY tag, matched ORDER BY cnt DESC
+        """
+    )
+    params = {"source": source} if source else {}
+    rows = (await session.exec(sql.bindparams(**params))).all()
+
+    unmatched = [UnmatchedTag(tag=tag, count=cnt) for tag, matched, cnt in rows if not matched]
+    total = sum(cnt for _, _, cnt in rows)
+    matched_count = sum(cnt for _, matched, cnt in rows if matched)
+    return unmatched, total, matched_count
+
+
+async def count_unmatched_body_terms(
+    session: AsyncSession, *, source: Optional[str] = None, min_count: int = 10, limit: int = 200
+) -> list[UnmatchedTag]:
+    stopwords = frozenset(
+        """
+        and the with for you our are can will not that this from have has your who its all any
+        data code web app apps api apis rest system systems service services server servers
+        software hardware platform platforms framework frameworks library libraries tool tools
+        engineer engineers engineering developer developers development develop team teams
+        experience experienced skill skills work working job jobs role roles position
+        company business product products project projects solution solutions
+        design designing architecture architectures management manage manager
+        support technical technology technologies application applications environment
+        process processes performance quality test testing analysis research
+        new using use used based level high low more most other than time year years
+        http https www com net org github google amazon microsoft apple
+        """.split()
+    )
+    where_source = "AND p.source = :source" if source else ""
+    sql = text(
+        f"""
+        WITH words AS (
+            SELECT lower(m[1]) AS term
+            FROM market.job_posting p,
+                 LATERAL regexp_matches(
+                     p.description,
+                     -- 영문/숫자로 시작하고 . + # / - 를 포함할 수 있는 토큰.
+                     -- Node.js · C++ · CI/CD · GPT-4 같은 표기를 살린다.
+                     '[A-Za-z][A-Za-z0-9]*(?:[.+#/-][A-Za-z0-9]+)*',
+                     'g'
+                 ) AS m
+            WHERE p.description IS NOT NULL
+              AND p.body_is_image IS FALSE
+              {where_source}
+        ),
+        filtered AS (
+            SELECT term FROM words
+            WHERE length(term) BETWEEN 3 AND 30
+              AND term NOT IN (SELECT lower(alias) FROM market.skill_alias)
+              AND term NOT IN (SELECT lower(name) FROM market.skill)
+              AND term !~ '^[0-9]'
+              AND term <> ALL(:stopwords)
+        )
+        SELECT term, COUNT(*) AS cnt
+        FROM filtered
+        GROUP BY term
+        HAVING COUNT(*) >= :min_count
+        ORDER BY cnt DESC
+        LIMIT :limit
+        """
+    )
+    params: dict[str, Any] = {
+        "min_count": min_count,
+        "limit": limit,
+        "stopwords": list(stopwords),
+    }
+    if source:
+        params["source"] = source
+    rows = (await session.exec(sql.bindparams(**params))).all()
+    return [UnmatchedTag(tag=term, count=cnt) for term, cnt in rows]
+
+
+async def upsert_tech_fields(
+    session: AsyncSession, rows: Sequence[tuple[str, str, int]]
+) -> dict[str, int]:
+    if rows:
+        stmt = pg_insert(TechField).values(
+            [{"code": c, "name": n, "sort_order": o} for c, n, o in rows]
+        )
+        await session.exec(
+            stmt.on_conflict_do_update(
+                index_elements=[TechField.code],
+                set_={"name": stmt.excluded.name, "sort_order": stmt.excluded.sort_order},
+            )
+        )
+    return await get_field_ids(session)
+
+
+async def upsert_skill(
+    session: AsyncSession,
+    *,
+    name: str,
+    category: Optional[str],
+    is_ambiguous: bool,
+    is_common: bool = False,
+) -> int:
+    stmt = pg_insert(Skill).values(
+        name=name, category=category, is_ambiguous=is_ambiguous, is_common=is_common
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Skill.name],
+        set_={
+            "category": stmt.excluded.category,
+            "is_ambiguous": stmt.excluded.is_ambiguous,
+            "is_common": stmt.excluded.is_common,
+        },
+    ).returning(Skill.id)
+    skill_id = (await session.exec(stmt)).one()
+    return skill_id if isinstance(skill_id, int) else skill_id[0]
+
+
+async def replace_skill_aliases(
+    session: AsyncSession,
+    skill_id: int,
+    aliases: Sequence[str],
+    cs_aliases: Sequence[str] = (),
+) -> int:
+    await session.exec(delete(SkillAlias).where(SkillAlias.skill_id == skill_id))
+    rows = [{"skill_id": skill_id, "alias": a, "case_sensitive": False} for a in aliases]
+    rows += [{"skill_id": skill_id, "alias": a, "case_sensitive": True} for a in cs_aliases]
+    if not rows:
+        return 0
+    stmt = (
+        pg_insert(SkillAlias)
+        .values(rows)
+        .on_conflict_do_nothing(index_elements=[SkillAlias.alias])
+        .returning(SkillAlias.id)
+    )
+    return len((await session.exec(stmt)).all())
+
+
+async def replace_skill_fields(
+    session: AsyncSession, skill_id: int, field_ids: Sequence[int]
+) -> None:
+    await session.exec(delete(SkillField).where(SkillField.skill_id == skill_id))
+    if not field_ids:
+        return
+    await session.exec(
+        pg_insert(SkillField)
+        .values([{"skill_id": skill_id, "field_id": fid} for fid in field_ids])
+        .on_conflict_do_nothing()
+    )
+
+
+async def iter_postings_for_reparse(
+    session: AsyncSession, *, source: Optional[str] = None, limit: Optional[int] = None
+) -> list[tuple[int, Optional[str], list[str], dict[str, Any], Optional[int], str]]:
+    stmt = select(
+        JobPosting.id,
+        JobPosting.description,
+        JobPosting.tags_raw,
+        JobPosting.raw_fields,
+        JobPosting.field_id,
+        JobPosting.title,
+    )
+    if source:
+        stmt = stmt.where(JobPosting.source == source)
+    stmt = stmt.order_by(JobPosting.id)
+    if limit:
+        stmt = stmt.limit(limit)
+    return [
+        (pid, desc, tags or [], raw or {}, field_id, title or "")
+        for pid, desc, tags, raw, field_id, title in (await session.exec(stmt)).all()
+    ]
+
+
+async def update_posting_body(
+    session: AsyncSession,
+    *,
+    source: str,
+    source_job_id: str,
+    description: Optional[str],
+    body_is_image: bool,
+    body_extract_failed: bool,
+) -> bool:
+    result = await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.source == source, JobPosting.source_job_id == source_job_id)
+        .values(
+            description=description,
+            body_is_image=body_is_image,
+            body_extract_failed=body_extract_failed,
+        )
+    )
+    return bool(result.rowcount)
+
+
+async def mark_body_extract_failed(session: AsyncSession, posting_id: int) -> bool:
+    result = await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.id == posting_id, JobPosting.body_is_image.is_(False))
+        .values(body_extract_failed=True)
+    )
+    return bool(result.rowcount)
+
+
+async def update_posting_field(
+    session: AsyncSession, posting_id: int, field_id: Optional[int]
+) -> None:
+    await session.exec(
+        JobPosting.__table__.update().where(JobPosting.id == posting_id).values(field_id=field_id)
+    )
+
+
+async def replace_posting_skills(
+    session: AsyncSession,
+    posting_id: int,
+    rows: Sequence[tuple[int, enums.Requirement, int]],
+) -> None:
+    await session.exec(delete(PostingSkill).where(PostingSkill.posting_id == posting_id))
+    if not rows:
+        return
+    await session.exec(
+        pg_insert(PostingSkill)
+        .values(
+            [
+                {
+                    "posting_id": posting_id,
+                    "skill_id": skill_id,
+                    "requirement": requirement.value,
+                    "mentions": mentions,
+                }
+                for skill_id, requirement, mentions in rows
+            ]
+        )
+        .on_conflict_do_nothing()
+    )
+
+
+async def get_content_hashes(
+    session: AsyncSession, source: str, source_job_ids: Sequence[str]
+) -> dict[str, Optional[str]]:
+    if not source_job_ids:
+        return {}
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id, JobPosting.content_hash).where(
+                JobPosting.source == source,
+                JobPosting.source_job_id.in_(list(source_job_ids)),
+            )
+        )
+    ).all()
+    return {sjid: h for sjid, h in rows}
+
+
+async def all_source_ids(session: AsyncSession, source: str) -> set[str]:
+    """그 사이트에서 지금까지 수집한 모든 공고 ID.
+
+    ★ recent_source_ids 와 쓰임이 다르다. 저쪽은 "최근 N일 내 수집" 이라 상세
+      요청을 생략할지 판단하는 용도고, 이쪽은 "우리가 아예 가진 적 있는가" 라
+      목록을 어디까지 내려갈지 판단하는 용도다. 7일 집합으로 중단을 판단하면
+      8일 전에 받은 공고가 '처음 보는 것' 으로 잡혀 영영 멈추지 않는다.
+    """
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id).where(JobPosting.source == source)
+        )
+    ).all()
+    return {row if isinstance(row, str) else row[0] for row in rows}
+
+
+async def recent_source_ids(session: AsyncSession, source: str, *, days: int) -> set[str]:
+    if days <= 0:
+        return set()
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    rows = (
+        await session.exec(
+            select(JobPosting.source_job_id).where(
+                JobPosting.source == source,
+                JobPosting.collected_at >= cutoff,
+            )
+        )
+    ).all()
+    return {row if isinstance(row, str) else row[0] for row in rows}
+
+
+async def touch_posting(session: AsyncSession, source: str, source_job_id: str) -> None:
+    await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.source == source, JobPosting.source_job_id == source_job_id)
+        .values(collected_at=datetime.now(UTC))
+    )
+
+
+def _conflict_update_set(excluded: Any) -> dict[str, Any]:
+    set_: dict[str, Any] = {
+        "title": excluded.title,
+        "company_name_raw": excluded.company_name_raw,
+        "tags_raw": excluded.tags_raw,
+        "career_min": excluded.career_min,
+        "career_max": excluded.career_max,
+        "salary_type": excluded.salary_type,
+        "body_is_image": excluded.body_is_image,
+        "body_extract_failed": excluded.body_extract_failed,
+        "content_hash": excluded.content_hash,
+        "collected_at": excluded.collected_at,
+        "raw_fields": excluded.raw_fields,
+    }
+    # None 이 와도 기존 값을 지우지 않는 컬럼. 새 컬럼은 위 dict 나 여기에 꼭 넣는다
+    for column in (
+        "description",
+        "welfare",
+        "salary_raw",
+        "salary_min",
+        "salary_max",
+        "location",
+        "education",
+        "employment_type",
+        "salary_period",
+        "posted_at",
+        "expires_at",
+        "company_id",
+        "field_id",
+    ):
+        set_[column] = func.coalesce(getattr(excluded, column), getattr(JobPosting, column))
+    return set_
+
+
+async def upsert_posting(session: AsyncSession, values: dict[str, Any]) -> int:
+    stmt = pg_insert(JobPosting).values(**values)
+
+    stmt = stmt.on_conflict_do_update(
+        constraint="job_posting_uk", set_=_conflict_update_set(stmt.excluded)
+    ).returning(JobPosting.id)
+    posting_id = (await session.exec(stmt)).one()
+    return posting_id if isinstance(posting_id, int) else posting_id[0]
+
+
+def _embeddable_posting_clause() -> Any:
+    return and_(
+        JobPosting.description.is_not(None),
+        JobPosting.body_is_image.is_(False),
+        JobPosting.body_extract_failed.is_(False),
+    )
+
+
+def _needs_embedding_clause() -> Any:
+    return or_(
+        JobPosting.embed_hash.is_(None),
+        JobPosting.embed_hash.is_distinct_from(JobPosting.content_hash),
+    )
+
+
+async def iter_postings_to_embed(
+    session: AsyncSession,
+    *,
+    posting_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
+) -> list[tuple[int, str, str]]:
+    stmt = (
+        select(JobPosting.id, JobPosting.description, JobPosting.content_hash)
+        .where(_embeddable_posting_clause(), _needs_embedding_clause())
+        .order_by(JobPosting.id)
+    )
+    if posting_ids is not None:
+        if not posting_ids:
+            return []
+        stmt = stmt.where(JobPosting.id.in_(list(posting_ids)))
+    if limit:
+        stmt = stmt.limit(limit)
+
+    return [
+        (pid, description, content_hash)
+        for pid, description, content_hash in (await session.exec(stmt)).all()
+        if description and content_hash
+    ]
+
+
+async def count_postings_to_embed(session: AsyncSession) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(JobPosting)
+        .where(_embeddable_posting_clause(), _needs_embedding_clause())
+    )
+    row = (await session.exec(stmt)).one()
+    return int(row if isinstance(row, int) else row[0])
+
+
+async def get_chunk_state(session: AsyncSession, posting_id: int) -> dict[tuple[str, int], str]:
+    rows = (
+        await session.exec(
+            select(
+                PostingChunk.section,
+                PostingChunk.seq,
+                PostingChunk.chunk_hash,
+                PostingChunk.embedding.is_(None).label("no_vector"),
+            ).where(PostingChunk.posting_id == posting_id)
+        )
+    ).all()
+    return {
+        (str(section), seq): ("" if no_vector else chunk_hash)
+        for section, seq, chunk_hash, no_vector in rows
+    }
+
+
+async def upsert_posting_chunk(
+    session: AsyncSession,
+    *,
+    posting_id: int,
+    section: str,
+    seq: int,
+    content: str,
+    chunk_hash: str,
+    embedding: Sequence[float],
+    token_count: Optional[int] = None,
+) -> None:
+    stmt = pg_insert(PostingChunk).values(
+        posting_id=posting_id,
+        section=section,
+        seq=seq,
+        content=content,
+        chunk_hash=chunk_hash,
+        embedding=list(embedding),
+        token_count=token_count,
+    )
+    await session.exec(
+        stmt.on_conflict_do_update(
+            constraint="posting_chunk_uk",
+            set_={
+                "content": stmt.excluded.content,
+                "chunk_hash": stmt.excluded.chunk_hash,
+                "embedding": stmt.excluded.embedding,
+                "token_count": stmt.excluded.token_count,
+            },
+        )
+    )
+
+
+async def delete_stale_chunks(
+    session: AsyncSession, posting_id: int, keep: Sequence[tuple[str, int]]
+) -> int:
+    stmt = delete(PostingChunk).where(PostingChunk.posting_id == posting_id)
+    if keep:
+        stmt = stmt.where(
+            tuple_(PostingChunk.section, PostingChunk.seq).not_in([(s, q) for s, q in keep])
+        )
+    return int((await session.exec(stmt)).rowcount or 0)
+
+
+async def set_posting_embed_hash(session: AsyncSession, posting_id: int, embed_hash: str) -> None:
+    await session.exec(
+        JobPosting.__table__.update()
+        .where(JobPosting.id == posting_id)
+        .values(embed_hash=embed_hash)
+    )
+
+
+async def clear_posting_embed_hash(session: AsyncSession, posting_ids: Sequence[int]) -> int:
+    if not posting_ids:
+        return 0
+    result = await session.exec(
+        JobPosting.__table__.update()
+        # 임베딩 대상이 아닌 공고는 청크가 없어 늘 달라진 것으로 잡히므로 거른다
+        .where(JobPosting.id.in_(list(posting_ids)), _embeddable_posting_clause())
+        .values(embed_hash=None)
+    )
+    return int(result.rowcount or 0)
+
+
+async def iter_companies_to_embed(
+    session: AsyncSession,
+    *,
+    company_ids: Optional[Sequence[int]] = None,
+    limit: Optional[int] = None,
+) -> list[tuple[int, Optional[str], Optional[str], Optional[str], Optional[str]]]:
+    stmt = (
+        select(
+            Company.id,
+            Company.description,
+            Company.business_content,
+            Company.industry,
+            Company.embed_hash,
+        )
+        .where(
+            or_(
+                Company.description.is_not(None),
+                Company.business_content.is_not(None),
+                Company.industry.is_not(None),
+            )
+        )
+        .order_by(Company.id)
+    )
+    if company_ids is not None:
+        if not company_ids:
+            return []
+        stmt = stmt.where(Company.id.in_(list(company_ids)))
+    if limit:
+        stmt = stmt.limit(limit)
+    return list((await session.exec(stmt)).all())
+
+
+async def set_company_embedding(
+    session: AsyncSession,
+    company_id: int,
+    *,
+    embedding: Sequence[float],
+    embed_hash: str,
+) -> None:
+    await session.exec(
+        Company.__table__.update()
+        .where(Company.id == company_id)
+        .values(profile_embedding=list(embedding), embed_hash=embed_hash)
+    )
+
+
+async def list_skills_with_aliases(session: AsyncSession) -> list[tuple[int, str, list[str]]]:
+    rows = (
+        await session.exec(
+            select(Skill.id, Skill.name, SkillAlias.alias)
+            .outerjoin(SkillAlias, SkillAlias.skill_id == Skill.id)
+            .order_by(Skill.id, SkillAlias.alias)
+        )
+    ).all()
+    grouped: dict[int, tuple[str, list[str]]] = {}
+    for skill_id, name, alias in rows:
+        entry = grouped.setdefault(skill_id, (name, []))
+        if alias is not None:
+            entry[1].append(alias)
+    return [(skill_id, name, aliases) for skill_id, (name, aliases) in grouped.items()]
+
+
+async def set_skill_embedding(
+    session: AsyncSession, skill_id: int, *, embedding: Sequence[float]
+) -> None:
+    await session.exec(
+        Skill.__table__.update().where(Skill.id == skill_id).values(embedding=list(embedding))
+    )
+
+
+async def count_chunks_by_section(session: AsyncSession) -> list[tuple[str, int]]:
+    rows = (
+        await session.exec(
+            select(PostingChunk.section, func.count())
+            .group_by(PostingChunk.section)
+            .order_by(PostingChunk.section)
+        )
+    ).all()
+    return [(str(section), int(count)) for section, count in rows]
+
+
+async def start_run(
+    session: AsyncSession,
+    *,
+    kind: enums.RunKind,
+    source: Optional[str] = None,
+    keyword: Optional[str] = None,
+) -> int:
+    run = CrawlRun(kind=kind, source=source, keyword=keyword, status=enums.RunStatus.RUNNING)
+    session.add(run)
+    await session.flush()
+    return run.id
+
+
+async def fail_stale_runs(session: AsyncSession, *, older_than_seconds: int) -> int:
+    cutoff = datetime.now(UTC) - timedelta(seconds=older_than_seconds)
+    result = await session.exec(
+        CrawlRun.__table__.update()
+        .where(
+            CrawlRun.status == enums.RunStatus.RUNNING.value,
+            CrawlRun.started_at < cutoff,
+        )
+        .values(
+            status=enums.RunStatus.FAILED.value,
+            finished_at=datetime.now(UTC),
+            message="워커가 중단되어 마감되지 못한 실행 (기동 시 정리)",
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+async def update_run_progress(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    fetched: int,
+    inserted: int,
+    updated: int,
+    skipped: int,
+    errors: int,
+) -> None:
+    """진행 중인 수집 통계를 중간 저장한다.
+
+    ★ finish_run 은 작업이 정상 종료될 때만 불린다. 타임아웃으로 강제 취소되면
+      거기까지 못 가서 통계가 통째로 사라진다 (실측 2026-10-06: 공고 811건이
+      실제로 적재됐는데 crawl_run 합계는 469건으로 찍혔다. 죽은 작업 2건이
+      커밋한 342건이 기록되지 않았다).
+      공고는 페이지마다 커밋되므로 통계도 같은 주기로 남긴다.
+
+    ★ status · finished_at 은 건드리지 않는다. 그건 마감하는 쪽(finish_run ·
+      fail_stale_runs)의 몫이다.
+    """
+    await session.exec(
+        CrawlRun.__table__.update()
+        .where(CrawlRun.id == run_id)
+        .values(
+            fetched=fetched,
+            inserted=inserted,
+            updated=updated,
+            skipped=skipped,
+            errors=errors,
+        )
+    )
+
+
+async def finish_run(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    status: enums.RunStatus,
+    fetched: int = 0,
+    inserted: int = 0,
+    updated: int = 0,
+    skipped: int = 0,
+    embedded: int = 0,
+    errors: int = 0,
+    message: Optional[str] = None,
+) -> None:
+    await session.exec(
+        CrawlRun.__table__.update()
+        .where(CrawlRun.id == run_id)
+        .values(
+            status=status.value,
+            fetched=fetched,
+            inserted=inserted,
+            updated=updated,
+            skipped=skipped,
+            embedded=embedded,
+            errors=errors,
+            message=message,
+            finished_at=datetime.now(UTC),
+        )
+    )
+
+
+async def companies_missing_logo(
+    session: AsyncSession,
+    *,
+    source: enums.CrawlSource,
+    limit: Optional[int] = None,
+    retry_after_days: int = 30,
+) -> list[tuple[int, str]]:
+    checked = Company.raw_fields["logo_checked_at"].astext
+    cutoff = (datetime.now(UTC) - timedelta(days=retry_after_days)).isoformat()
+
+    stmt = (
+        select(Company.id, CompanySource.source_company_id)
+        .join(CompanySource, CompanySource.company_id == Company.id)
+        .where(
+            Company.logo_url.is_(None),
+            CompanySource.source == source.value,
+            CompanySource.source_company_id.is_not(None),
+            or_(checked.is_(None), checked < cutoff),
+        )
+        .order_by(Company.id)
+        .distinct(Company.id)
+    )
+    if limit:
+        stmt = stmt.limit(limit)
+    return list((await session.exec(stmt)).all())
+
+
+async def save_company_logo(
+    session: AsyncSession,
+    *,
+    company_id: int,
+    logo_url: Optional[str],
+) -> None:
+    # 로고가 없는 회사를 매일 다시 조회하지 않도록 확인 시각을 남긴다.
+    # 파이썬에서 만든 json 문자열을 cast 하면 이중 인코딩돼서 jsonb 문자열이 되고,
+    # 객체 || 문자열 은 배열이 되어 raw_fields 가 깨진다. 객체는 DB 에서 만든다
+    stamp = func.jsonb_build_object("logo_checked_at", datetime.now(UTC).isoformat())
+    values: dict[str, Any] = {
+        "raw_fields": func.coalesce(Company.raw_fields, text("'{}'::jsonb")).op("||")(stamp)
+    }
+    if logo_url:
+        values["logo_url"] = logo_url[:255]
+
+    await session.exec(update(Company).where(Company.id == company_id).values(**values))
+
+
+async def count_companies_missing_logo(session: AsyncSession) -> int:
+    row = (
+        await session.exec(
+            select(func.count()).select_from(Company).where(Company.logo_url.is_(None))
+        )
+    ).one()
+    return row if isinstance(row, int) else row[0]
