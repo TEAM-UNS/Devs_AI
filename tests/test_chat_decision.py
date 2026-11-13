@@ -7,16 +7,26 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import END
 
 from app.core.config import get_settings
 from app.domains.chat.graph import decision
 from app.domains.chat.graph.nodes import jev_routed
+from app.domains.chat.graph.prompts import off_topic_reply
 from app.domains.chat.schemas import UserProfile
 from app.domains.crawler.enums import CareerLevel
 
 
-def _answers(tool: str, confidence: float = 0.95, multi: float = 0.1, **args: str) -> dict[str, Any]:
+def _answers(
+    tool: str,
+    confidence: float = 0.95,
+    multi: float = 0.1,
+    scope: str = "job",
+    scope_confidence: float = 0.99,
+    **args: str,
+) -> dict[str, Any]:
     answers: dict[str, Any] = {k: SimpleNamespace(choice=v, confidence=0.99) for k, v in args.items()}
+    answers["scope"] = SimpleNamespace(choice=scope, confidence=scope_confidence)
     answers["tool"] = SimpleNamespace(choice=tool, confidence=confidence)
     answers["multi_tool"] = SimpleNamespace(noul=multi)
     return answers
@@ -99,6 +109,39 @@ async def test_uncertain_falls_back_to_llm(jev: dict[str, Any], answers: Any) ->
     assert await _decide() == {}
 
 
+async def test_confident_off_topic_answers_without_llm(jev: dict[str, Any]) -> None:
+    jev["answers"] = _answers("none", scope="off_topic", scope_confidence=0.99)
+
+    update = await _decide("소갈비찜 레시피 알려줘")
+
+    reply = update["messages"][0]
+    assert reply.text == off_topic_reply()
+    assert not reply.tool_calls
+    assert jev_routed({"messages": [HumanMessage("소갈비찜 레시피 알려줘"), reply]}) == END
+
+
+async def test_off_topic_wins_over_tool_choice(jev: dict[str, Any]) -> None:
+    jev["answers"] = _answers("get_popular_skills", scope="off_topic", field="backend")
+
+    update = await _decide()
+
+    assert update["messages"][0].text == off_topic_reply()
+
+
+@pytest.mark.parametrize("scope", ["job", "chat"])
+async def test_in_scope_is_not_blocked(jev: dict[str, Any], scope: str) -> None:
+    jev["answers"] = _answers("none", scope=scope)
+
+    assert await _decide() == {}
+
+
+async def test_unsure_off_topic_goes_to_llm(jev: dict[str, Any]) -> None:
+    threshold = get_settings().jev_off_topic_min
+    jev["answers"] = _answers("none", scope="off_topic", scope_confidence=threshold - 0.01)
+
+    assert await _decide("Kubernetes 가 뭐야?") == {}
+
+
 async def test_disabled_skips_jev(jev: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "jev_enabled", False)
 
@@ -146,3 +189,4 @@ def test_routed() -> None:
     call = {"name": "get_data_coverage", "args": {}, "id": "jev_1", "type": "tool_call"}
     assert jev_routed({"messages": [AIMessage(content="", tool_calls=[call])]}) == "tools"
     assert jev_routed({"messages": [HumanMessage("안녕")]}) == "llm"
+    assert jev_routed({"messages": [AIMessage("범위 밖 안내")]}) == END
