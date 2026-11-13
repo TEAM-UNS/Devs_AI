@@ -1,6 +1,6 @@
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
@@ -23,6 +23,19 @@ class ClaudeLLM:
 
     def chat(self) -> BaseChatModel:
         return self._model
+
+
+    @staticmethod
+    def system(text: str) -> SystemMessage:
+        return SystemMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+        )
 
 
     def structured[M: BaseModel](self, schema: type[M]) -> Runnable[LanguageModelInput, M]:
