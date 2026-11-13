@@ -9,12 +9,11 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState
 from langgraph.runtime import get_runtime
 
-from app.domains.chat.graph.prompts import system_prompt, profile_prompt
+from app.domains.chat.graph.prompts import system_prompt, profile_prompt, service_guide
 from app.domains.chat.tools.registry import chat_tools
 from app.domains.chat.tools.context import ToolContext
 from app.domains.chat.exceptions import LLMRefused
 from app.domains.chat.graph.decision import decide
-from app.infra.llm.tracing import node_trace_context
 from app.infra.llm.errors import upstream_guard
 from app.infra.llm.factory import build_llm
 from app.infra.llm.port import LLMPort, StopReason
@@ -60,7 +59,7 @@ def jev_routed(state: ChatState) -> str:
 
 
 async def call_llm(state: ChatState) -> dict[str, Any]:
-    messages = [SystemMessage(system_prompt())]
+    messages = [_llm().system(system_prompt() + service_guide())]
 
     profile = get_runtime(ToolContext).context.profile
     if profile is not None:
