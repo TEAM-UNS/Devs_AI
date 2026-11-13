@@ -1,5 +1,5 @@
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel
@@ -22,6 +22,11 @@ class GeminiLLM:
 
     def chat(self) -> BaseChatModel:
         return self._model
+
+
+    @staticmethod
+    def system(text: str) -> SystemMessage:
+        return SystemMessage(text)
 
 
     def structured[M: BaseModel](self, schema: type[M]) -> Runnable[LanguageModelInput, M]:
