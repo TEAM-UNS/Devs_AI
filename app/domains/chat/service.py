@@ -37,7 +37,7 @@ from app.domains.chat.models import (
 )
 from app.domains.chat.schemas import StreamRequest
 from app.domains.chat.graph.build import build_graph
-from app.domains.chat.graph.prompts import title_prompt
+from app.domains.chat.graph.prompts import title_prompt, off_topic_reply
 from app.domains.chat.tools.context import ToolContext
 from app.domains.chat.schemas import UserProfile
 
@@ -53,6 +53,10 @@ def _to_messages(rows: list[ChatMessage]) -> list[BaseMessage]:
         if row.role == MessageRole.USER:
             messages.append(HumanMessage(row.content))
         elif row.role == MessageRole.ASSISTANT:
+            if row.content == off_topic_reply():
+                if messages and isinstance(messages[-1], HumanMessage):
+                    messages.pop()
+                continue
             messages.append(AIMessage(row.content))
 
     return messages
